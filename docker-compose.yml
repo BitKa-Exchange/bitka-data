@@ -20,49 +20,49 @@ services:
     networks:
       - ${NETWORK_NAME}
 
-  auth-service:
-    container_name: bitka-auth
-    build:
-      context: .
-      dockerfile: services/auth/Dockerfile
-    ports:
-      - "${AUTH_PORT}:${AUTH_PORT}"
-    env_file:
-      - .env
-    environment:
-      APP_ENV: ${APP_ENV}
-      DB_HOST: ${DB_HOST}
-      DB_NAME: ${AUTH_DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASS: ${DB_PASS}
-      PORT: ${AUTH_PORT}
-    depends_on:
-      - postgres
-    networks:
-      - ${NETWORK_NAME}
+  # auth-service:
+  #   container_name: bitka-auth
+  #   build:
+  #     context: .
+  #     dockerfile: services/auth/Dockerfile
+  #   ports:
+  #     - "${AUTH_PORT}:${AUTH_PORT}"
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     APP_ENV: ${APP_ENV}
+  #     DB_HOST: ${DB_HOST}
+  #     DB_NAME: ${AUTH_DB_NAME}
+  #     DB_USER: ${DB_USER}
+  #     DB_PASS: ${DB_PASS}
+  #     PORT: ${AUTH_PORT}
+  #   depends_on:
+  #     - postgres
+  #   networks:
+  #     - ${NETWORK_NAME}
 
-  account-service:
-    container_name: bitka-account
-    build:
-      context: .
-      dockerfile: services/account/Dockerfile
-    ports:
-      - "${ACCOUNT_PORT}:${ACCOUNT_PORT}"
-    env_file:
-      - .env
-    environment:
-      APP_ENV: ${APP_ENV}
-      DB_HOST: ${DB_HOST}
-      DB_NAME: ${ACCOUNT_DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASS: ${DB_PASS}
-      HTTP_PORT: ${ACCOUNT_PORT}
-      AUTH_JWKS_URL: ${AUTH_JWKS_URL}
-    depends_on:
-      - postgres
-      - auth-service
-    networks:
-      - ${NETWORK_NAME}
+  # account-service:
+  #   container_name: bitka-account
+  #   build:
+  #     context: .
+  #     dockerfile: services/account/Dockerfile
+  #   ports:
+  #     - "${ACCOUNT_PORT}:${ACCOUNT_PORT}"
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     APP_ENV: ${APP_ENV}
+  #     DB_HOST: ${DB_HOST}
+  #     DB_NAME: ${ACCOUNT_DB_NAME}
+  #     DB_USER: ${DB_USER}
+  #     DB_PASS: ${DB_PASS}
+  #     HTTP_PORT: ${ACCOUNT_PORT}
+  #     AUTH_JWKS_URL: ${AUTH_JWKS_URL}
+  #   depends_on:
+  #     - postgres
+  #     - auth-service
+  #   networks:
+  #     - ${NETWORK_NAME}
 
   # --- Data Platform Services ---
   redpanda:
