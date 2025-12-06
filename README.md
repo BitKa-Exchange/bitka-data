@@ -96,12 +96,12 @@ Workflow:
     Terminal 1: สำหรับข้อมูล Users
 
     Bash
-    python consumer.py
+    python data-platform/scripts/consumer.py
 
     Terminal 2: สำหรับข้อมูล Trading (Orders, Transactions)
 
     Bash
-    python consumer_transactions.py
+    python data-platform/scripts/consumer_transactions.py
 
   4.dashboard.py
     รันเพื่อดูภาพรวมข้อมูลผ่าน dashboard
