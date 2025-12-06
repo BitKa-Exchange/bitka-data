@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  # --- Existing Services (Backend) ---
+  postgres:
+    image: postgres:14-alpine
+    container_name: bitka-postgres
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${AUTH_DB_NAME} 
+    ports:
+      - "${DB_PORT}:5432"
+    command: ["postgres", "-c", "wal_level=logical"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ${NETWORK_NAME}
+
+  auth-service:
+    container_name: bitka-auth
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    ports:
+      - "${AUTH_PORT}:${AUTH_PORT}"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV}
+      DB_HOST: ${DB_HOST}
+      DB_NAME: ${AUTH_DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      PORT: ${AUTH_PORT}
+    depends_on:
+      - postgres
+    networks:
+      - ${NETWORK_NAME}
+
+  account-service:
+    container_name: bitka-account
+    build:
+      context: .
+      dockerfile: services/account/Dockerfile
+    ports:
+      - "${ACCOUNT_PORT}:${ACCOUNT_PORT}"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV}
+      DB_HOST: ${DB_HOST}
+      DB_NAME: ${ACCOUNT_DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      HTTP_PORT: ${ACCOUNT_PORT}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL}
+    depends_on:
+      - postgres
+      - auth-service
+    networks:
+      - ${NETWORK_NAME}
+
+  # --- Data Platform Services ---
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+    container_name: bitka-redpanda
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    networks:
+      - ${NETWORK_NAME}
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    container_name: bitka-console
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKER_CONNECT}
+    depends_on:
+      - redpanda
+    networks:
+      - ${NETWORK_NAME}
+
+  debezium:
+    image: quay.io/debezium/connect:latest
+    container_name: bitka-debezium
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: ${KAFKA_BROKER_CONNECT}
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    depends_on:
+      - redpanda
+      - postgres
+    networks:
+      - ${NETWORK_NAME}
+
+  # --- Data Warehouse ---
+  warehouse:
+    image: postgres:18-alpine
+    container_name: bitka-warehouse
+    restart: always
+    environment:
+      POSTGRES_USER: ${DW_USER}
+      POSTGRES_PASSWORD: ${DW_PASS}
+      POSTGRES_DB: ${DW_DB_NAME}
+    ports:
+      - "${DW_PORT_EXTERNAL}:${DW_PORT_INTERNAL}"
+    volumes:
+      - warehouse_data:/var/lib/postgresql/data
+    networks:
+      - ${NETWORK_NAME}
+
+volumes:
+  postgres_data:
+  warehouse_data:
+
+networks:
+  bitka-net:
+    driver: bridge
+    name: ${NETWORK_NAME}
