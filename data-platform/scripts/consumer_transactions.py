@@ -47,6 +47,82 @@ def connect_db():
             print("🔄 Retrying in 5 seconds...")
             time.sleep(5)
 
+# --- ⭐ ฟังก์ชันใหม่: สร้างตารางถ้ายังไม่มี ---
+def create_tables_if_not_exist():
+    queries = [
+        """
+        CREATE TABLE IF NOT EXISTS fact_transfers (
+            transfer_id INT PRIMARY KEY,
+            sender_id INT,
+            receiver_id INT,
+            amount DECIMAL(18, 2),
+            currency VARCHAR(10),
+            event_time TIMESTAMP
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fact_orders (
+            order_id INT PRIMARY KEY,
+            user_id INT,
+            symbol VARCHAR(10),
+            side VARCHAR(4),
+            price DECIMAL(18, 2),
+            amount DECIMAL(18, 8),
+            event_time TIMESTAMP
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fact_trade_executions (
+            execution_id INT PRIMARY KEY,
+            order_id INT,
+            symbol VARCHAR(10),
+            side VARCHAR(4),
+            price DECIMAL(18, 2),
+            quantity DECIMAL(18, 8),
+            fee DECIMAL(18, 8),
+            role VARCHAR(10),
+            event_time TIMESTAMP
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fact_order_status (
+            history_id INT PRIMARY KEY,
+            order_id INT,
+            status VARCHAR(20),
+            reason TEXT,
+            event_time TIMESTAMP
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fact_wallet_transactions (
+            transaction_id INT PRIMARY KEY,
+            user_id INT,
+            currency VARCHAR(10),
+            amount_change DECIMAL(18, 8),
+            transaction_type VARCHAR(20),
+            balance_after DECIMAL(18, 8),
+            event_time TIMESTAMP
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fact_market_prices (
+            tick_id INT PRIMARY KEY,
+            symbol VARCHAR(10),
+            price DECIMAL(18, 2),
+            event_time TIMESTAMP
+        );
+        """
+    ]
+    
+    print("🛠 Checking tables...")
+    try:
+        for q in queries:
+            cursor.execute(q)
+        print("✅ All tables are ready.")
+    except Exception as e:
+        print(f"❌ Failed to create tables: {e}")
+        exit(1) # ถ้าสร้างตารางไม่ได้ ให้ปิดโปรแกรมเลย
+
 def convert_timestamp(micro_ts):
     if micro_ts is None: return datetime.now()
     try: return datetime.fromtimestamp(micro_ts / 1000000)
@@ -56,7 +132,10 @@ def to_decimal(value):
     if value is None: return None
     return Decimal(str(value)) 
 
+# --- Main Execution ---
 connect_db()
+create_tables_if_not_exist() # ⭐ เรียกใช้ฟังก์ชันสร้างตารางตรงนี้
+
 consumer = KafkaConsumer(
     *TOPICS,
     bootstrap_servers=[KAFKA_BROKER],
@@ -127,4 +206,4 @@ for message in consumer:
 
     except Exception as e:
         print(f"⚠️ Consumer Error: {e}")
-        time.sleep(1) 
+        time.sleep(1)
