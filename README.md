@@ -1,188 +1,130 @@
-# 🏗️ Bitka Data Pipeline & Warehouse
+# 📖 Bitka Data Pipeline - Setup & Usage Guide
 
-  ส่วนนี้รับผิดชอบเรื่องการดึงข้อมูล (Ingestion), การประมวลผลแบบ Real-time (Streaming), และการจัดเก็บลงคลังข้อมูล (Data Warehousing) เพื่อรองรับการวิเคราะห์
+เอกสารนี้อธิบายขั้นตอนการติดตั้ง (Installation), การรันระบบ (Execution), และการตรวจสอบข้อมูล (Verification) สำหรับโปรเจกต์ Bitka Data Pipeline
 
+------------------------------------------------------------------------------------------------------
 
---------------------------------------------------------------------------------
+## 🛠 Part 1: Installation & Infrastructure Setup
 
+ขั้นตอนการเตรียม Environment และการเปิดใช้งาน Infrastructure ผ่าน Docker
 
-## 🔄 Architecture Overview
+### 1\. ติดตั้ง Dependencies
 
-  ระบบใช้สถาปัตยกรรม **CDC (Change Data Capture)** เพื่อดึงข้อมูล Real-time จาก Database หลักผ่าน Kafka และนำไปจัดเก็บใน Data Warehouse
+รันคำสั่งเพื่อติดตั้ง Python libraries ที่จำเป็น
 
-  graph LR
-    Source[(Postgres DB)] -- CDC (Debezium) --> Kafka[Redpanda / Kafka]
-    Kafka -- Topics --> Consumer[Python ETL Scripts]
-    Consumer -- Clean & Transform --> Warehouse[(Postgres DW)]
+```bash
+pip3 install -r requirements.txt
+```
 
+**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
---------------------------------------------------------------------------------
+  * Terminal จะแสดงรายการติดตั้ง หรือแจ้งว่า `Requirement already satisfied` สำหรับ library ต่างๆ เช่น `pandas`, `kafka-python`, `sqlalchemy`, `streamlit` ฯลฯ
 
+------------------------------------------------------------------------------------------------------
 
-Workflow:
+### 2\. เริ่มต้นระบบ Infrastructure (Docker)
 
-  Source: จับการเปลี่ยนแปลงข้อมูล (Insert/Update) จาก auth-service และ account-service
+รันคำสั่ง Docker Compose เพื่อสร้าง Container สำหรับ Database, Kafka (Redpanda) และ Service อื่นๆ
 
-  Ingestion: ใช้ Debezium อ่าน WAL logs และส่ง Event เข้าสู่ Redpanda (Kafka)
+```bash
+docker-compose up -d
+```
 
-  Processing: Python Consumers ดักฟังหัวข้อ (Topics) ต่างๆ, แปลง Data Types (เช่น Timestamp, Decimal), และจัดการ Data Consistency
+**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
-  Storage: จัดเก็บลง PostgreSQL Data Warehouse ในรูปแบบ Star Schema (Fact & Dimension tables)
+  * Docker สร้าง Network `bitka-net`
+  * Container ทั้งหมดต้องขึ้นสถานะ **Started** ได้แก่:
+      * `bitka-warehouse` (Postgres DW)
+      * `bitka-redpanda` (Kafka)
+      * `bitka-postgres` (Operational DB)
+      * `bitka-console` (Redpanda UI)
+      * `bitka-debezium` & `bitka-connector-init`
+  * ตรวจสอบสถานะด้วย `docker-compose ps` ต้องเห็นสถานะ **Up** ทุกตัว
 
+------------------------------------------------------------------------------------------------------
 
---------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------
 
 
-🚀 Key Features (สิ่งที่ทำในส่วนนี้)
+## 🚀 Part 2: Running the Pipeline
 
-  Real-time Processing: ข้อมูลไหลเข้า Warehouse ทันทีที่มีการเทรดหรือสมัครสมาชิก
+ขั้นตอนการรันโปรแกรมเพื่อรับ-ส่งข้อมูล (Consumer & Producer)
 
-  Robustness: ระบบมี Auto-Reconnect Logic หาก Database หรือ Kafka หลุด Script จะรอและเชื่อมต่อใหม่เองโดยอัตโนมัติ ไม่ Crash
+### 1\. รัน Consumer (ผู้รับข้อมูล)
 
-  Data Integrity: จัดการเรื่อง Decimal Precision สำหรับข้อมูลการเงิน (Money/Crypto) อย่างถูกต้องแม่นยำ ป้องกันปัญหาทศนิยมเพี้ยน
+เปิด Terminal ใหม่ แล้วรัน script นี้เพื่อรอรับข้อมูลเข้าสู่ Data Warehouse
 
-  Secure Configuration: ใช้การจัดการ Config ผ่าน .env แยก Environment ชัดเจน ไม่มีการ Hardcode รหัสผ่าน
+```bash
+python3 data-platform/scripts/consumer.py
+```
 
+**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
---------------------------------------------------------------------------------
+  * แสดงข้อความ `🚀 Bitka Event-Driven Consumer Started`
+  * แสดงการเชื่อมต่อ `Connected to Data Warehouse!` และ `Checking schema consistency...`
+  * แสดงสถานะ `🎧 Listening to 10 topics...` และรอรับข้อมูล (Log จะวิ่งเมื่อมีข้อมูลเข้ามา)
 
+------------------------------------------------------------------------------------------------------
 
-🛠️ Tech Stack
+### 2\. รัน Producer Simulator (ตัวจำลองข้อมูล)
 
-  Streaming Platform: Redpanda (Kafka Compatible)
+เปิด Terminal อีกหน้าต่าง แล้วรัน script นี้เพื่อจำลองเหตุการณ์ (Events)
 
-  Connectors: Debezium Postgres Connector
+```bash
+python3 producer_simulator.py
+```
 
-  ETL Language: Python 3.x (kafka-python, psycopg2, python-dotenv)
+**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
-  Data Warehouse: PostgreSQL
+  * แสดงข้อความ `🚀 Bitka Producer Simulator... Connected to Kafka!`
+  * เริ่มส่งข้อมูลจำลอง (Simulation) โดยแสดง Log การส่ง Events ต่างๆ เช่น:
+      * `📤 Sent [LOGIN] ...`
+      * `📤 Sent [CREATED] ...`
+      * `📤 Sent [UPDATE] ...`
+  * *Note:* ในหน้าต่าง Consumer (ข้อ 1) คุณควรจะเห็น Log `📥 Saved EventID: ...` เด้งขึ้นมาพร้อมกัน
 
+------------------------------------------------------------------------------------------------------
 
---------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------
 
 
-📂 Data Warehouse Schema
+## 🔎 Part 3: Data Access & Visualization
 
-  ข้อมูลถูกจัดเก็บแยกตามวัตถุประสงค์:
+ขั้นตอนการเข้าไปตรวจสอบข้อมูลในฐานข้อมูลและการดู Dashboard
 
-  Table Name	              Type	        Description
-  dim_users_history	        Dimension	    เก็บประวัติการเปลี่ยนแปลงข้อมูล User
-  fact_orders	Fact	        ข้อมูลการวาง    Order (Buy/Sell)
-  fact_trade_executions	    Fact	        ข้อมูลการจับคู่เทรดที่สำเร็จ (Matched)
-  fact_transfers	          Fact	        ประวัติการโอนเงินระหว่างบัญชี
-  fact_wallet_transactions	Fact	        การเปลี่ยนแปลงยอดเงินในกระเป๋า (Deposit/Withdraw)
+------------------------------------------------------------------------------------------------------
 
+### 1\. เข้าถึง Data Warehouse (PostgreSQL)
 
---------------------------------------------------------------------------------
+คำสั่งสำหรับเข้าไป Query ข้อมูลใน Database ผ่าน Terminal
 
+```bash
+docker exec -it bitka-warehouse psql -U warehouse_admin -d bitka_dw
+```
 
-⚙️ How to Run (วิธีรันระบบ Data)
+**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
-  1. Prerequisites
+  * เข้าสู่หน้าจอ `bitka_dw=#`
+  * สามารถใช้คำสั่ง SQL ตรวจสอบข้อมูลได้ เช่น:
+      * `\dt` : เพื่อดูรายชื่อตาราง (Tables) ทั้งหมด
+      * `SELECT COUNT(*) FROM fact_orders_created;` : เพื่อนับจำนวน Order ที่เข้ามา
 
-    ตรวจสอบไฟล์ .env ว่าตั้งค่าถูกต้อง (ดูตัวอย่างจาก .env.example)
+------------------------------------------------------------------------------------------------------
 
-  2. Install Dependencies
+### 2\. เปิดใช้งาน Dashboard (Streamlit)
 
-    ติดตั้ง Library ที่จำเป็นผ่าน pip
+รันคำสั่งเพื่อเปิดหน้า Web Dashboard สำหรับดูภาพรวมข้อมูล
 
-    Bash
-    pip install -r requirements.txt
+```bash
+python3 -m streamlit run data-platform/dashboard.py
+```
 
-  3. Start Consumers
+**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
-    รัน Script เพื่อเริ่มดูดข้อมูล (แนะนำให้รันแยก Terminal หรือรันเป็น Background process)
+  * Terminal แสดง URL สำหรับเข้าใช้งาน:
+      * `Local URL: http://localhost:8501`
+  * Browser จะเปิดหน้า Dashboard ขึ้นมาโดยอัตโนมัติ (ถ้าขึ้น password ให้กด enter)
 
-    Terminal 1: สำหรับข้อมูล Users
+------------------------------------------------------------------------------------------------------
 
-    Bash
-    python data-platform/scripts/consumer.py
-
-    Terminal 2: สำหรับข้อมูล Trading (Orders, Transactions)
-
-    Bash
-    python data-platform/scripts/consumer_transactions.py
-
-  4.dashboard.py
-    รันเพื่อดูภาพรวมข้อมูลผ่าน dashboard
-
-    Bash
-    python3 -m streamlit run data-platform/dashboard.py 
-
-
-  5.เข้า sql warehouse
-
-    Bash
-    docker exec -it bitka-warehouse psql -U warehouse_admin -d bitka_dw
-
-
-  6.เทสข้อมูล
-    ก็อปโค้ดด้านล่างไปวางจะได้ข้อมูลจำลอง
-    Bash
-          docker exec -i bitka-postgres psql -U postgres -d auth_db -c "
-      -- 1. สร้างกราฟราคา (Market Prices) 50 จุด (จำลองราคา BTC วิ่งแกว่งตัว)
-      INSERT INTO market_prices (symbol, price)
-      SELECT 
-          'BTC_THB',
-          3000000 + (random() * 50000 - 25000) -- ราคาแกว่งบวกลบ 25,000
-      FROM generate_series(1, 50);
-
-      -- 2. สร้างออเดอร์ (Orders) 40 รายการ (สุ่ม Buy/Sell)
-      INSERT INTO orders (user_id, symbol, side, price, amount)
-      SELECT 
-          (random() * 20 + 1)::INT, -- สุ่ม User ID 1-20
-          'BTC_THB',
-          CASE WHEN random() > 0.5 THEN 'BUY' ELSE 'SELL' END,
-          3000000 + (random() * 10000),
-          (random() * 0.5 + 0.01)
-      FROM generate_series(1, 40);
-
-      -- 3. สร้างการจับคู่เทรด (Executions) 30 รายการ
-      INSERT INTO trade_executions (order_id, match_id, symbol, side, price, quantity, fee, role)
-      SELECT 
-          i,
-          'MATCH-' || i,
-          'BTC_THB',
-          CASE WHEN random() > 0.5 THEN 'BUY' ELSE 'SELL' END,
-          3000000 + (random() * 5000),
-          (random() * 0.1 + 0.01),
-          (random() * 100),
-          CASE WHEN random() > 0.5 THEN 'MAKER' ELSE 'TAKER' END
-      FROM generate_series(1, 30) AS i;
-
-      -- 4. สร้างธุรกรรมการเงิน (Wallet) 20 รายการ (เน้นเติมเงิน Deposit)
-      INSERT INTO wallet_transactions (user_id, currency, amount_change, transaction_type, balance_after)
-      SELECT 
-          (random() * 20 + 1)::INT,
-          'THB',
-          (random() * 500000 + 10000), -- เติมเงิน 10k - 500k
-          'DEPOSIT',
-          (random() * 1000000)
-      FROM generate_series(1, 20);
-
-      -- 5. โอนเงินข้ามบัญชี (Transfers) 10 รายการ
-      INSERT INTO transfers (sender_id, receiver_id, amount, currency)
-      SELECT 
-          (random() * 10 + 1)::INT,
-          (random() * 10 + 11)::INT,
-          (random() * 1000 + 100),
-          'THB'
-      FROM generate_series(1, 10);
-      "
-
-    Scenario B: ลูกค้าเติมเงิน (Wallet Deposit)
-
-    SQL
-    -- รันใน Source DB (bitka_account)
-    -- สมมติ user_id = 1
-    INSERT INTO wallet_transactions (user_id, currency, amount_change, transaction_type, balance_after, created_at)
-    VALUES (1, 'THB', 5000.00, 'DEPOSIT', 5000.00, NOW());
-    👉 Expected Result: ดูที่ Terminal consumer_transactions.py จะขึ้น 💳 Wallet: DEPOSIT... และข้อมูลโผล่ใน fact_wallet_transactions
-
-    Scenario C: การส่งคำสั่งซื้อ (Place Order)
-
-    SQL
-    -- รันใน Source DB (bitka_account)
-    INSERT INTO orders (user_id, symbol, side, price, amount, status, created_at)
-    VALUES (1, 'BTC_THB', 'BUY', 1000000, 0.5, 'OPEN', NOW());
-    👉 Expected Result: ข้อมูลจะไหลเข้า fact_orders
+------------------------------------------------------------------------------------------------------

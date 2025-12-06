@@ -1,0 +1,22 @@
+{
+  "name": "bitka-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    
+    "database.hostname": "postgres", 
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "password",
+    "database.dbname": "bitka_auth",
+    
+    "topic.prefix": "bitka_cdc",
+    "plugin.name": "pgoutput",
+    
+    "slot.name": "debezium_slot",
+    "publication.name": "debezium_pub",
+    "publication.autocreate.mode": "filtered",
+
+    "table.include.list": "public.users,public.orders,public.transactions"
+  }
+}

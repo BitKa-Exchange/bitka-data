@@ -1,7 +1,8 @@
 version: '3.8'
 
 services:
-  # --- Existing Services (Backend) ---
+  # --- 1. Source Database (Backend) ---
+  # จำลองว่าเป็น Database ของระบบหลัก (App)
   postgres:
     image: postgres:14-alpine
     container_name: bitka-postgres
@@ -11,66 +12,24 @@ services:
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASS}
-      POSTGRES_DB: ${AUTH_DB_NAME} 
+      POSTGRES_DB: ${AUTH_DB_NAME}
     ports:
-      - "${DB_PORT}:5432"
+      - "${DB_PORT}:5432" # ปกติคือ 5432
+    # สำคัญ: ต้องเปิด wal_level=logical เพื่อให้ Debezium ดูดข้อมูลได้ (CDC)
     command: ["postgres", "-c", "wal_level=logical"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - ${NETWORK_NAME}
+      - bitka-net
 
-  # auth-service:
-  #   container_name: bitka-auth
-  #   build:
-  #     context: .
-  #     dockerfile: services/auth/Dockerfile
-  #   ports:
-  #     - "${AUTH_PORT}:${AUTH_PORT}"
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     APP_ENV: ${APP_ENV}
-  #     DB_HOST: ${DB_HOST}
-  #     DB_NAME: ${AUTH_DB_NAME}
-  #     DB_USER: ${DB_USER}
-  #     DB_PASS: ${DB_PASS}
-  #     PORT: ${AUTH_PORT}
-  #   depends_on:
-  #     - postgres
-  #   networks:
-  #     - ${NETWORK_NAME}
-
-  # account-service:
-  #   container_name: bitka-account
-  #   build:
-  #     context: .
-  #     dockerfile: services/account/Dockerfile
-  #   ports:
-  #     - "${ACCOUNT_PORT}:${ACCOUNT_PORT}"
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     APP_ENV: ${APP_ENV}
-  #     DB_HOST: ${DB_HOST}
-  #     DB_NAME: ${ACCOUNT_DB_NAME}
-  #     DB_USER: ${DB_USER}
-  #     DB_PASS: ${DB_PASS}
-  #     HTTP_PORT: ${ACCOUNT_PORT}
-  #     AUTH_JWKS_URL: ${AUTH_JWKS_URL}
-  #   depends_on:
-  #     - postgres
-  #     - auth-service
-  #   networks:
-  #     - ${NETWORK_NAME}
-
-  # --- Data Platform Services ---
+  # --- 2. Data Platform (Streaming Core) ---
+  # Kafka (Redpanda) - หัวใจของการส่งข้อมูล
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
     container_name: bitka-redpanda
     ports:
-      - "19092:19092"
-      - "9644:9644"
+      - "19092:19092" # External Port: สำหรับ Python Script ในเครื่องเรา (Localhost)
+      - "9644:9644"   # Admin Port
     command:
       - redpanda start
       - --smp 1
@@ -79,30 +38,35 @@ services:
       - --overprovisioned
       - --node-id 0
       - --check=false
+      # Internal (9092): สำหรับ Debezium คุยกับ Redpanda ใน Docker Network
+      # External (19092): สำหรับ Python Script คุยกับ Redpanda จากข้างนอก
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     networks:
-      - ${NETWORK_NAME}
+      - bitka-net
 
+  # UI สำหรับดูข้อมูลใน Kafka (Optional แต่มีไว้ debug ดีมาก)
   redpanda-console:
     image: redpandadata/console:latest
     container_name: bitka-console
     ports:
       - "8080:8080"
     environment:
-      KAFKA_BROKERS: ${KAFKA_BROKER_CONNECT}
+      KAFKA_BROKERS: redpanda:9092
     depends_on:
       - redpanda
     networks:
-      - ${NETWORK_NAME}
+      - bitka-net
 
+  # --- 3. Change Data Capture (CDC) ---
+  # ตัวดูดข้อมูลจาก Source DB -> Kafka
   debezium:
     image: quay.io/debezium/connect:latest
     container_name: bitka-debezium
     ports:
-      - "8083:8083"
+      - "8083:8083" # API Port
     environment:
-      BOOTSTRAP_SERVERS: ${KAFKA_BROKER_CONNECT}
+      BOOTSTRAP_SERVERS: redpanda:9092
       GROUP_ID: 1
       CONFIG_STORAGE_TOPIC: connect_configs
       OFFSET_STORAGE_TOPIC: connect_offsets
@@ -113,23 +77,50 @@ services:
       - redpanda
       - postgres
     networks:
-      - ${NETWORK_NAME}
+      - bitka-net
+  
+  # Script สั้นๆ เพื่อยิง config เข้า Debezium อัตโนมัติเมื่อเริ่มระบบ
+  connector-init:
+    image: curlimages/curl:latest
+    container_name: bitka-connector-init
+    depends_on:
+      - debezium
+    networks:
+      - bitka-net
+    volumes:
+      - ./connector.json:/connector.json
+    command: >
+      /bin/sh -c "
+        echo '⏳ Waiting for Debezium to be ready...';
+        while ! curl -s http://debezium:8083/ > /dev/null; do 
+          echo 'zzZ... waiting for Debezium'; 
+          sleep 5; 
+        done;
+        echo '✅ Debezium is UP! Registering Connector...';
+        curl -i -X POST -H 'Accept:application/json' -H 'Content-Type:application/json' http://debezium:8083/connectors/ -d @/connector.json;
+        echo '🎉 Done! Connector registered.';
+      "
 
-  # --- Data Warehouse ---
+  # --- 4. Data Warehouse (Destination) ---
+  # ปลายทางที่ Python Consumer จะนำข้อมูลไปหยอด
   warehouse:
     image: postgres:18-alpine
     container_name: bitka-warehouse
     restart: always
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: ${DW_USER}
       POSTGRES_PASSWORD: ${DW_PASS}
       POSTGRES_DB: ${DW_DB_NAME}
     ports:
-      - "${DW_PORT_EXTERNAL}:${DW_PORT_INTERNAL}"
+      # Map Port 5433 (Host) -> 5432 (Container) 
+      # เพื่อให้ Python Script connect ผ่าน localhost:5433 ได้
+      - "${DW_PORT_EXTERNAL}:5432"
     volumes:
       - warehouse_data:/var/lib/postgresql/data
     networks:
-      - ${NETWORK_NAME}
+      - bitka-net
 
 volumes:
   postgres_data:
