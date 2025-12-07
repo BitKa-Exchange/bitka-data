@@ -313,13 +313,15 @@ def handle_message(topic, msg):
                           data.get('dest_address'))
 
     elif topic == 'accounting.withdrawal.sent':
-        # บันทึกเป็น Event ใหม่ใน fact_withdrawals โดยสถานะเป็น SENT
-        sql = """INSERT INTO fact_withdrawals (event_id, correlation_id, producer, event_time, 
-                 withdrawal_id, chain_tx_hash, network_fee, status)
-                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'SENT') 
-                 ON CONFLICT (event_id) DO NOTHING;"""
-        val = envelope + (data.get('withdrawal_id'), data.get('chain_tx_hash'), 
-                          to_decimal(data.get('network_fee')))
+        sql = """UPDATE fact_withdrawals
+                SET chain_tx_hash = %s,
+                    network_fee = %s,
+                    status = 'SENT'
+                WHERE withdrawal_id = %s;"""
+        val = (data.get('chain_tx_hash'),
+            to_decimal(data.get('network_fee')),
+            data.get('withdrawal_id'))
+
 
     # --- 3. Identity ---
     elif topic == 'identity.user.login':
