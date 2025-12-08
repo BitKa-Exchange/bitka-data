@@ -3,6 +3,7 @@ import time
 import random
 import uuid
 import os
+import json  # เพิ่ม import json
 from decimal import Decimal
 from faker import Faker
 from datetime import datetime
@@ -122,25 +123,48 @@ def create_transaction(curr):
         curr.execute(sql, (wd_id, user_id, asset, amount, f"0x{fake.md5()}", "requested"))
         print(f"💸 [Accounting] Withdrawal Request: {amount} {asset}")
 
-# แก้ไขฟังก์ชัน main นิดหน่อยเพื่อความชัวร์
+# --- (NEW) Function สร้าง Audit Log ---
+def create_audit_log(curr):
+    if not USERS: return
+    actor_id = random.choice(USERS)
+    log_id = str(uuid.uuid4())
+    
+    # สุ่มเหตุการณ์ Audit
+    events = [
+        ("login_failed", "auth", {"attempt": 1}, {"attempt": 2}),
+        ("change_password", "security", {"changed": False}, {"changed": True}),
+        ("create_api_key", "api", {"keys": 0}, {"keys": 1}),
+        ("view_sensitive_data", "privacy", {}, {"viewed": True}),
+        ("admin_update_kyc", "admin", {"level": 1}, {"level": 2})
+    ]
+    
+    action, resource, before, after = random.choice(events)
+    
+    sql = """
+        INSERT INTO audit_logs (log_id, actor_id, action, resource, details_before, details_after)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    # แปลง Dict เป็น JSON String ก่อนส่งเข้า DB
+    curr.execute(sql, (log_id, actor_id, action, resource, json.dumps(before), json.dumps(after)))
+    print(f"🛡️ [System] Audit Log: {action} by user")
+
 def main():
     print("🚀 Starting Producer Simulator...")
     
-    # บรรทัดนี้จะวนรอจนกว่าจะได้ Connection มา
     conn = get_connection() 
     
     try:
         while True:
-            # เพิ่มการเช็ค Connection หลุดกลางทาง
             if conn.closed:
                 print("⚠️ Connection lost, reconnecting...")
                 conn = get_connection()
 
             with conn: # Auto Commit block
                 with conn.cursor() as curr:
+                    # เพิ่ม "audit" เข้าไปในตัวเลือก
                     action = random.choices(
-                        ["user", "order", "tx", "sleep"], 
-                        weights=[10, 50, 20, 10], 
+                        ["user", "order", "tx", "audit", "sleep"], 
+                        weights=[10, 40, 20, 20, 10], # ปรับน้ำหนักให้มีโอกาสเกิด Audit
                         k=1
                     )[0]
                     
@@ -150,6 +174,8 @@ def main():
                         create_order(curr)
                     elif action == "tx":
                         create_transaction(curr)
+                    elif action == "audit": # เรียกใช้ฟังก์ชันใหม่
+                        create_audit_log(curr)
             
             time.sleep(random.uniform(0.5, 2.0))
             

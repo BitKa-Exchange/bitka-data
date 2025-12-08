@@ -1,5 +1,17 @@
-.env
-.vscode/
+# Python
 __pycache__/
+*.py[cod]
 venv/
-*.log
+.pytest_cache/
+
+# Mac OS
+.DS_Store
+
+# Environment Variables (อย่าเอา Password ขึ้น Git!)
+.env
+
+# Docker
+docker-compose.override.yml
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/

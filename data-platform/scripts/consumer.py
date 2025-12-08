@@ -24,7 +24,8 @@ TOPIC_MAPPING = {
     "bitka.public.deposits": "deposits",
     "bitka.public.withdrawals": "withdrawals",
     "bitka.public.tickers": "tickers",
-    "bitka.public.login_history": "login_history"
+    "bitka.public.login_history": "login_history",
+    "bitka.public.audit_logs": "audit_logs"  # ✅ เพิ่มบรรทัดนี้ครับ
 }
 
 def get_db_connection():
@@ -36,35 +37,41 @@ def get_db_connection():
         print(f"❌ DB Connect Error: {e}")
         return None
 
-# --- ฟังก์ชันช่วยแปลง Timestamp ---
+# --- ฟังก์ชันช่วยแปลง Type ข้อมูล ---
 def fix_data_types(row):
     """
-    แปลง Unix Timestamp (int) ให้เป็น Python Datetime Object
-    เพื่อให้ Postgres เข้าใจ
+    1. แปลง Unix Timestamp (int) -> Python Datetime
+    2. แปลง Dictionary -> JSON String (สำหรับ audit_logs)
     """
     new_row = row.copy()
-    time_cols = ['created_at', 'updated_at']
     
+    # 1. จัดการเรื่องเวลา (Timestamp)
+    time_cols = ['created_at', 'updated_at']
     for col in time_cols:
         if col in new_row and new_row[col] is not None:
             val = new_row[col]
-            # ถ้ามาเป็นตัวเลข (int/float) ให้แปลงเป็น datetime
             if isinstance(val, (int, float)):
                 try:
-                    # Debezium บางทีส่งมาเป็น Microseconds (เลขหลักล้านล้าน)
-                    # ถ้าเลขเยอะเกิน 11 หลัก ให้หาร 1,000,000 เพื่อเป็นวินาที
+                    # ถ้าเลขเยอะเกิน 11 หลัก ให้หาร 1,000,000 เพื่อเป็นวินาที (Microseconds -> Seconds)
                     if val > 9999999999: 
                         val = val / 1_000_000
-                    
                     new_row[col] = datetime.fromtimestamp(val)
                 except Exception:
-                    pass # ถ้าแปลงไม่ได้ให้ปล่อยไว้เหมือนเดิม
+                    pass 
+
+    # 2. จัดการเรื่อง JSON (สำหรับ audit_logs) ✅ เพิ่มส่วนนี้ครับ
+    json_cols = ['details_before', 'details_after']
+    for col in json_cols:
+        if col in new_row and isinstance(new_row[col], dict):
+            # Postgres ต้องการ String สำหรับ JSONB ไม่ใช่ Python Dict
+            new_row[col] = json.dumps(new_row[col])
+
     return new_row
 
 def process_batch(conn, table_name, buffer):
     if not buffer: return
     
-    # 1. แปลงข้อมูล Type (Timestamp) ให้ถูกต้องก่อน
+    # 1. แปลงข้อมูล Type ให้ถูกต้องก่อน
     cleaned_buffer = [fix_data_types(row) for row in buffer]
     
     # 2. ระบุ Primary Key ของแต่ละตาราง
@@ -79,15 +86,12 @@ def process_batch(conn, table_name, buffer):
     elif table_name == "login_history": pkey = "id"
 
     # 3. Deduplicate: กรองเอาเฉพาะข้อมูลล่าสุดของ Key นั้นๆ ใน Batch นี้
-    # โดยใช้ Dictionary (เพราะ Key ซ้ำไม่ได้ ถ้าใส่ Key เดิม Value จะถูกทับด้วยตัวใหม่ล่าสุด)
     deduplicated_map = {}
     for row in cleaned_buffer:
-        # ถ้า row ไม่มี key ที่เราต้องการ (เช่น ข้อมูลขยะ) ให้ข้าม
         if pkey in row:
             row_key = row[pkey]
-            deduplicated_map[row_key] = row # ค่าเก่าจะถูกทับด้วยค่าใหม่เสมอ
+            deduplicated_map[row_key] = row 
     
-    # แปลงกลับเป็น List เพื่อเตรียม Insert
     final_batch = list(deduplicated_map.values())
     
     if not final_batch: return
@@ -115,7 +119,7 @@ def process_batch(conn, table_name, buffer):
 
         execute_values(cursor, sql, values)
         conn.commit()
-        print(f"✅ Inserted {len(final_batch)} rows into {table_name} (Deduplicated form {len(buffer)})")
+        print(f"✅ Inserted {len(final_batch)} rows into {table_name} (Deduplicated from {len(buffer)})")
         
     except Exception as e:
         print(f"⚠️ Batch Insert Error ({table_name}): {e}")
@@ -133,7 +137,8 @@ def main():
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
         auto_offset_reset='earliest',
-        group_id='bitka_warehouse_group'
+        # ✅ เปลี่ยน Group ID เป็น v2 เพื่อให้เริ่มอ่าน Audit Logs ตั้งแต่ต้น
+        group_id='bitka_warehouse_group_v2' 
     )
 
     buffers = {table: [] for table in TOPIC_MAPPING.values()}

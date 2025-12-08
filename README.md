@@ -1,130 +1,145 @@
 # 📖 Bitka Data Pipeline - Setup & Usage Guide
 
-เอกสารนี้อธิบายขั้นตอนการติดตั้ง (Installation), การรันระบบ (Execution), และการตรวจสอบข้อมูล (Verification) สำหรับโปรเจกต์ Bitka Data Pipeline
+เอกสารนี้อธิบายขั้นตอนการรันระบบ (Execution), การตรวจสอบข้อมูล (Monitoring), และการวิเคราะห์ข้อมูล (Analysis) สำหรับโปรเจกต์ **Bitka Data Pipeline** แบบ End-to-End
 
-------------------------------------------------------------------------------------------------------
+-----
 
-## 🛠 Part 1: Installation & Infrastructure Setup
+## 🛠 Part 1: Prerequisites & Installation
 
-ขั้นตอนการเตรียม Environment และการเปิดใช้งาน Infrastructure ผ่าน Docker
+สิ่งที่ต้องมีก่อนเริ่มใช้งาน
 
-### 1\. ติดตั้ง Dependencies
+1.  **Docker Desktop** (ต้องเปิดใช้งานอยู่)
+2.  **Python 3.10+** (สำหรับรัน Jupyter Notebook ในเครื่อง)
 
-รันคำสั่งเพื่อติดตั้ง Python libraries ที่จำเป็น
+### ติดตั้ง Python Dependencies (สำหรับ Local Analysis)
+
+แม้ระบบหลักจะรันบน Docker แต่เราควรลง Library ไว้ในเครื่องเพื่อรัน Notebook วิเคราะห์ข้อมูล
 
 ```bash
-pip3 install -r requirements.txt
+pip install -r requirements.txt
+```
+
+-----
+
+## 🚀 Part 2: Start the System (One-Command Launch)
+
+เราใช้ Docker Compose ในการรันทุก Service (Database, Kafka, Producer, Consumer, Dashboard) ด้วยคำสั่งเดียว
+
+### 1\. เริ่มต้นระบบทั้งหมด
+
+```bash
+docker-compose up -d --build
 ```
 
 **✅ Expected Result (ผลลัพธ์ที่ควรได้):**
 
-  * Terminal จะแสดงรายการติดตั้ง หรือแจ้งว่า `Requirement already satisfied` สำหรับ library ต่างๆ เช่น `pandas`, `kafka-python`, `sqlalchemy`, `streamlit` ฯลฯ
+  * Docker จะ Build Image ใหม่สำหรับ `producer`, `consumer`, และ `dashboard`
+  * Service ทั้งหมดสถานะ **Started**:
+      * `bitka_source_db` (Postgres Source)
+      * `bitka_warehouse` (Postgres DW)
+      * `bitka_redpanda` & `bitka_console` (Kafka)
+      * `bitka_debezium` (CDC)
+      * `bitka_producer` (Simulator ยิงข้อมูล)
+      * `bitka_consumer` (ตัวรับข้อมูลลง Warehouse)
+      * `bitka_dashboard` (Streamlit Web App)
+  * **Debezium** จะถูก Config อัตโนมัติโดย `connector-setup`
 
-------------------------------------------------------------------------------------------------------
+-----
 
-### 2\. เริ่มต้นระบบ Infrastructure (Docker)
+## 🔎 Part 3: Monitoring & Logs
 
-รันคำสั่ง Docker Compose เพื่อสร้าง Container สำหรับ Database, Kafka (Redpanda) และ Service อื่นๆ
+เนื่องจากโปรแกรมรันอยู่เบื้องหลัง (Background) เราจะดูการทำงานผ่าน Logs
 
-```bash
-docker-compose up -d
-```
+### 1\. ดู Producer Simulator (ตัวปั๊มข้อมูล)
 
-**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
-
-  * Docker สร้าง Network `bitka-net`
-  * Container ทั้งหมดต้องขึ้นสถานะ **Started** ได้แก่:
-      * `bitka-warehouse` (Postgres DW)
-      * `bitka-redpanda` (Kafka)
-      * `bitka-postgres` (Operational DB)
-      * `bitka-console` (Redpanda UI)
-      * `bitka-debezium` & `bitka-connector-init`
-  * ตรวจสอบสถานะด้วย `docker-compose ps` ต้องเห็นสถานะ **Up** ทุกตัว
-
-------------------------------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------------------------------
-
-
-## 🚀 Part 2: Running the Pipeline
-
-ขั้นตอนการรันโปรแกรมเพื่อรับ-ส่งข้อมูล (Consumer & Producer)
-
-### 1\. รัน Consumer (ผู้รับข้อมูล)
-
-เปิด Terminal ใหม่ แล้วรัน script นี้เพื่อรอรับข้อมูลเข้าสู่ Data Warehouse
+ดูว่า Simulator กำลังยิงข้อมูลอะไรออกมาบ้าง
 
 ```bash
-python3 data-platform/scripts/consumer.py
+docker-compose logs -f producer
 ```
 
-**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
+  * *ผลลัพธ์:* เห็น Log เช่น `📈 [Trading] Order Placed...` หรือ `🛡️ [System] Audit Log...`
 
-  * แสดงข้อความ `🚀 Bitka Event-Driven Consumer Started`
-  * แสดงการเชื่อมต่อ `Connected to Data Warehouse!` และ `Checking schema consistency...`
-  * แสดงสถานะ `🎧 Listening to 10 topics...` และรอรับข้อมูล (Log จะวิ่งเมื่อมีข้อมูลเข้ามา)
+### 2\. ดู Consumer Worker (ตัวบันทึกข้อมูล)
 
-------------------------------------------------------------------------------------------------------
-
-### 2\. รัน Producer Simulator (ตัวจำลองข้อมูล)
-
-เปิด Terminal อีกหน้าต่าง แล้วรัน script นี้เพื่อจำลองเหตุการณ์ (Events)
+ดูว่า Consumer รับข้อมูลจาก Kafka และบันทึกลง Warehouse สำเร็จไหม
 
 ```bash
-python3 producer_simulator.py
+docker-compose logs -f consumer
 ```
 
-**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
+  * *ผลลัพธ์:* เห็น Log `✅ Inserted 50 rows into orders...`
 
-  * แสดงข้อความ `🚀 Bitka Producer Simulator... Connected to Kafka!`
-  * เริ่มส่งข้อมูลจำลอง (Simulation) โดยแสดง Log การส่ง Events ต่างๆ เช่น:
-      * `📤 Sent [LOGIN] ...`
-      * `📤 Sent [CREATED] ...`
-      * `📤 Sent [UPDATE] ...`
-  * *Note:* ในหน้าต่าง Consumer (ข้อ 1) คุณควรจะเห็น Log `📥 Saved EventID: ...` เด้งขึ้นมาพร้อมกัน
+### 3\. ดู Kafka Topic (Redpanda Console)
 
-------------------------------------------------------------------------------------------------------
+เข้าหน้าเว็บเพื่อดูข้อมูลดิบใน Kafka Topic
 
-------------------------------------------------------------------------------------------------------
+  * 👉 **URL:** [http://localhost:8080](https://www.google.com/search?q=http://localhost:8080)
+  * ไปที่เมนู **Topics** จะเห็น Topic เช่น `bitka.public.orders`, `bitka.public.audit_logs`
 
+-----
 
-## 🔎 Part 3: Data Access & Visualization
+## 📊 Part 4: Visualization & Analysis
 
-ขั้นตอนการเข้าไปตรวจสอบข้อมูลในฐานข้อมูลและการดู Dashboard
+### 1\. Executive Dashboard (Streamlit)
 
-------------------------------------------------------------------------------------------------------
+หน้าจอ Real-time สำหรับดูภาพรวมธุรกิจและตรวจสอบข้อมูลทุกตาราง
 
-### 1\. เข้าถึง Data Warehouse (PostgreSQL)
+  * 👉 **URL:** [http://localhost:8501](https://www.google.com/search?q=http://localhost:8501)
+  * **Features:**
+      * **Overview:** ดูยอด User, ราคาเหรียญ, กระแสเงินสด (Net Flow)
+      * **Data Explorer:** กดเลือกดูข้อมูลดิบของทุกตาราง (Users, Orders, Audit Logs, etc.)
 
-คำสั่งสำหรับเข้าไป Query ข้อมูลใน Database ผ่าน Terminal
+### 2\. Data Science Analysis (Jupyter Notebook)
+
+สำหรับการวิเคราะห์ข้อมูลเชิงลึกและการทำ Visualizations
+
+  * เปิดไฟล์ `Notebook.ipynb` ใน VS Code หรือ Jupyter Lab
+  * กด **Run All** เพื่อดึงข้อมูลจาก Warehouse มาสร้างกราฟและ Report อัตโนมัติ
+
+-----
+
+## 🗄 Part 5: Direct Database Access
+
+หากต้องการเขียน SQL Query เองใน Terminal
+
+### เข้าถึง Data Warehouse (Postgres)
 
 ```bash
-docker exec -it bitka-warehouse psql -U warehouse_admin -d bitka_dw
+docker exec -it bitka_warehouse psql -U warehouse_admin -d bitka_dw
 ```
 
-**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
+**ตัวอย่าง SQL Commands:**
 
-  * เข้าสู่หน้าจอ `bitka_dw=#`
-  * สามารถใช้คำสั่ง SQL ตรวจสอบข้อมูลได้ เช่น:
-      * `\dt` : เพื่อดูรายชื่อตาราง (Tables) ทั้งหมด
-      * `SELECT COUNT(*) FROM fact_orders_created;` : เพื่อนับจำนวน Order ที่เข้ามา
+```sql
+-- ดูรายชื่อตารางทั้งหมด
+\dt
 
-------------------------------------------------------------------------------------------------------
+-- ดูรายการเทรดล่าสุด 5 รายการ
+SELECT * FROM matches ORDER BY created_at DESC LIMIT 5;
 
-### 2\. เปิดใช้งาน Dashboard (Streamlit)
+-- ดู Audit Logs ที่เกี่ยวกับการเงิน
+SELECT * FROM audit_logs WHERE action LIKE '%kyc%' LIMIT 5;
+```
 
-รันคำสั่งเพื่อเปิดหน้า Web Dashboard สำหรับดูภาพรวมข้อมูล
+-----
+
+## 🧹 Part 6: Clean Up (Nuclear Option)
+
+หากต้องการลบข้อมูลทั้งหมดแล้วเริ่มใหม่ (Reset from zero)
+
+### แบบที่ 1: ล้างเฉพาะโปรเจกต์นี้ (แนะนำ)
+
+ลบ Container และข้อมูลใน Database ทิ้งทั้งหมด แล้วเริ่มใหม่
 
 ```bash
-python3 -m streamlit run data-platform/dashboard.py
+docker-compose down -v
+# จากนั้นเริ่มใหม่ด้วย
+docker-compose up -d --build
 ```
 
-**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
+### แบบที่ 2: ล้าง Image เก่าทิ้งด้วย (ถ้าแก้โค้ดแล้ว Docker ไม่จำ)
 
-  * Terminal แสดง URL สำหรับเข้าใช้งาน:
-      * `Local URL: http://localhost:8501`
-  * Browser จะเปิดหน้า Dashboard ขึ้นมาโดยอัตโนมัติ (ถ้าขึ้น password ให้กด enter)
-
-------------------------------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------------------------------
+```bash
+docker-compose down --rmi all -v
+```
