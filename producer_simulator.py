@@ -1,187 +1,162 @@
+import psycopg2
 import time
-import json
 import random
 import uuid
-from datetime import datetime
-from kafka import KafkaProducer
+import os
 from decimal import Decimal
+from faker import Faker
+from datetime import datetime
 
 # --- Configuration ---
-KAFKA_BROKER = 'localhost:19092'
+# ใช้ localhost เพราะเรารัน script นี้จากเครื่องเรา ยิงเข้า Container ผ่าน Port Mapping
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432") 
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "password")
+DB_NAME = "bitka_main"
 
-# หัวข้อที่เราจะยิงข้อมูลเข้าไป (ต้องตรงกับ Consumer)
-TOPICS = {
-    'ORDER_CREATED': 'trading.orders.created',
-    'ORDER_CANCELLED': 'trading.orders.cancelled',
-    'MATCH_EXECUTED': 'trading.matches.executed',
-    'DEPOSIT': 'accounting.deposit.confirmed',
-    'WITHDRAW_REQ': 'accounting.withdrawal.requested',
-    'WITHDRAW_SENT': 'accounting.withdrawal.sent',
-    'LOGIN': 'identity.user.login',
-    'KYC': 'identity.kyc.updated',
-    'TICKER': 'market.ticker.update',
-    'AUDIT': 'system.audit.entry'
-}
+fake = Faker()
 
-# --- Data Pools (Mock Data) ---
-SYMBOLS = ['BTC_THB', 'ETH_THB', 'DOGE_THB', 'USDT_THB']
-USERS = [str(uuid.uuid4()) for _ in range(10)] # สร้าง User ปลอม 10 คน
-ASSETS = ['BTC', 'ETH', 'DOGE', 'USDT', 'THB']
-PRODUCERS = ['order-service', 'matching-engine', 'ledger-service', 'auth-service', 'market-data-service']
+def get_connection():
+    while True: # วนลูปไปเรื่อยๆ จนกว่าจะต่อได้
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASS,
+                dbname=DB_NAME
+            )
+            print("✅ Connected to Database!")
+            return conn
+        except psycopg2.OperationalError as e:
+            print(f"⏳ Database not ready yet... waiting 2 seconds ({e})")
+            time.sleep(2) # รอ 2 วินาทีแล้วลองใหม่
+        except Exception as e:
+            print(f"❌ Unexpected Error: {e}")
+            time.sleep(2)
 
-# --- Helper Functions ---
-def get_iso_time():
-    return datetime.utcnow().isoformat() + 'Z'
+# --- Mock Data Helpers ---
+USERS = [] # Cache users to reference them in orders
+SYMBOLS = ["BTC_THB", "ETH_THB", "DOGE_THB", "USDT_THB"]
 
-def random_decimal_str(min_val, max_val, precision=2):
-    """สุ่มตัวเลขและคืนค่าเป็น String เพื่อความแม่นยำแบบการเงิน"""
-    val = random.uniform(min_val, max_val)
-    return f"{val:.{precision}f}"
-
-def create_envelope(producer_name, payload):
-    """ห่อข้อมูลตามมาตรฐาน Envelope"""
-    return {
-        "event_id": str(uuid.uuid4()),
-        "correlation_id": str(uuid.uuid4()),
-        "producer": producer_name,
-        "timestamp": get_iso_time(),
-        "data": payload
-    }
-
-# --- Generators for Each Domain ---
-
-def gen_order_created():
-    user = random.choice(USERS)
-    symbol = random.choice(SYMBOLS)
-    side = random.choice(['buy', 'sell'])
-    order_type = random.choice(['limit', 'market'])
-    price = random_decimal_str(1000, 3000000) if order_type == 'limit' else "0"
+def create_user(curr):
+    user_id = str(uuid.uuid4())
+    email = fake.email()
+    sql = "INSERT INTO users (user_id, email, kyc_level) VALUES (%s, %s, %s)"
+    curr.execute(sql, (user_id, email, random.choice([1, 2, 3])))
+    USERS.append(user_id)
+    print(f"👤 [Identity] New User: {email}")
     
-    payload = {
-        "order_id": str(uuid.uuid4()),
-        "user_id": user,
-        "symbol": symbol,
-        "side": side,
-        "type": order_type,
-        "price": price,
-        "quantity": random_decimal_str(0.01, 5, 8),
-        "time_in_force": random.choice(['GTC', 'IOC', 'FOK'])
-    }
-    return TOPICS['ORDER_CREATED'], create_envelope('order-service', payload)
+    # Simulate Login
+    if random.random() > 0.5:
+        sql_login = "INSERT INTO login_history (user_id, ip_address, device_id, status) VALUES (%s, %s, %s, %s)"
+        curr.execute(sql_login, (user_id, fake.ipv4(), fake.md5(), "success"))
 
-def gen_match_executed():
+def create_order(curr):
+    if not USERS: return
+    user_id = random.choice(USERS)
     symbol = random.choice(SYMBOLS)
-    price = random_decimal_str(1000, 3000000)
-    qty = random_decimal_str(0.01, 2, 8)
+    side = random.choice(["buy", "sell"])
+    price = round(random.uniform(100, 3000000), 2)
+    qty = round(random.uniform(0.01, 10), 8)
     
-    payload = {
-        "match_id": str(uuid.uuid4()),
-        "symbol": symbol,
-        "price": price,
-        "quantity": qty,
-        "maker_user_id": random.choice(USERS),
-        "maker_order_id": str(uuid.uuid4()),
-        "maker_fee": random_decimal_str(0, 10),
-        "maker_fee_asset": "THB",
-        "taker_user_id": random.choice(USERS),
-        "taker_order_id": str(uuid.uuid4()),
-        "taker_fee": random_decimal_str(0, 0.001, 8),
-        "taker_fee_asset": symbol.split('_')[0],
-        "taker_side": random.choice(['buy', 'sell'])
-    }
-    return TOPICS['MATCH_EXECUTED'], create_envelope('matching-engine', payload)
+    order_id = str(uuid.uuid4())
+    sql = """
+        INSERT INTO orders (order_id, user_id, symbol, side, type, price, quantity, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    curr.execute(sql, (order_id, user_id, symbol, side, "limit", price, qty, "open"))
+    print(f"📈 [Trading] Order Placed: {side} {symbol} @ {price}")
 
-def gen_deposit():
-    asset = random.choice(ASSETS)
-    payload = {
-        "tx_id": str(uuid.uuid4()),
-        "user_id": random.choice(USERS),
-        "asset": asset,
-        "amount": random_decimal_str(10, 5000),
-        "chain_tx_hash": "0x" + uuid.uuid4().hex,
-        "network": "ERC20" if asset != 'BTC' else 'BITCOIN',
-        "confirmations": random.randint(1, 12)
-    }
-    return TOPICS['DEPOSIT'], create_envelope('ledger-service', payload)
+    # Chance to Match immediately (Simulate Matching Engine)
+    if random.random() > 0.7:
+        create_match(curr, symbol, price, qty, user_id)
 
-def gen_login():
-    status = random.choices(['success', 'failed_pass', 'failed_2fa'], weights=[80, 15, 5])[0]
-    payload = {
-        "user_id": random.choice(USERS),
-        "ip_address": f"192.168.1.{random.randint(1, 255)}",
-        "device_id": uuid.uuid4().hex[:16],
-        "location_geo": "Bangkok, TH",
-        "status": status,
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)..."
-    }
-    return TOPICS['LOGIN'], create_envelope('auth-service', payload)
-
-def gen_ticker():
-    symbol = random.choice(SYMBOLS)
-    base_price = random.uniform(10000, 1000000)
-    payload = {
-        "symbol": symbol,
-        "last_price": f"{base_price:.2f}",
-        "open_24h": f"{base_price * 0.95:.2f}",
-        "high_24h": f"{base_price * 1.05:.2f}",
-        "low_24h": f"{base_price * 0.90:.2f}",
-        "volume_24h": random_decimal_str(10, 500),
-        "quote_vol_24h": random_decimal_str(1000000, 50000000)
-    }
-    # Ticker often doesn't need correlation_id, but our envelope requires it, so we generate one.
-    return TOPICS['TICKER'], create_envelope('market-data-service', payload)
-
-def gen_audit():
-    actions = ['change_password', 'create_api_key', 'export_data', 'update_kyc_rules']
-    action = random.choice(actions)
-    payload = {
-        "actor_id": random.choice(USERS),
-        "action": action,
-        "resource": "user_security" if "password" in action else "system_config",
-        "details_before": {"enabled": False},
-        "details_after": {"enabled": True},
-        "severity": "WARN" if "export" in action else "INFO"
-    }
-    return TOPICS['AUDIT'], create_envelope('audit-service', payload)
-
-# --- Main Simulation Loop ---
-if __name__ == "__main__":
-    print(f"🚀 Bitka Producer Simulator Connecting to {KAFKA_BROKER}...")
+def create_match(curr, symbol, price, qty, taker_id):
+    if not USERS: return
+    match_id = str(uuid.uuid4())
+    maker_id = random.choice(USERS)
     
-    try:
-        producer = KafkaProducer(
-            bootstrap_servers=[KAFKA_BROKER],
-            value_serializer=lambda v: json.dumps(v).encode('utf-8')
-        )
-        print("✅ Connected to Kafka!")
-    except Exception as e:
-        print(f"❌ Failed to connect to Kafka: {e}")
-        exit(1)
+    sql = """
+        INSERT INTO matches (match_id, symbol, price, quantity, maker_user_id, taker_user_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    curr.execute(sql, (match_id, symbol, price, qty, maker_id, taker_id))
+    print(f"🔥 [Trading] Match Executed! {symbol} Vol: {qty}")
+    
+    # Update Ticker Logic (Simplified)
+    update_ticker(curr, symbol, price, qty)
 
-    print("🎲 Starting Data Simulation... (Press Ctrl+C to stop)")
+def update_ticker(curr, symbol, last_price, vol):
+    # Upsert Ticker
+    sql = """
+        INSERT INTO tickers (symbol, last_price, volume_24h)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (symbol) DO UPDATE 
+        SET last_price = EXCLUDED.last_price,
+            volume_24h = tickers.volume_24h + EXCLUDED.volume_24h,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    curr.execute(sql, (symbol, last_price, vol))
+    print(f"📊 [Market] Ticker Update: {symbol} -> {last_price}")
+
+def create_transaction(curr):
+    if not USERS: return
+    user_id = random.choice(USERS)
+    asset = random.choice(["THB", "BTC", "USDT"])
+    amount = round(random.uniform(100, 50000), 2)
+    
+    # 50% Deposit, 50% Withdrawal
+    if random.random() > 0.5:
+        tx_id = str(uuid.uuid4())
+        sql = "INSERT INTO deposits (tx_id, user_id, asset, amount, network) VALUES (%s, %s, %s, %s, %s)"
+        curr.execute(sql, (tx_id, user_id, asset, amount, "ERC20"))
+        print(f"💰 [Accounting] Deposit: {amount} {asset}")
+    else:
+        wd_id = str(uuid.uuid4())
+        sql = """
+            INSERT INTO withdrawals (withdrawal_id, user_id, asset, amount, dest_address, status) 
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        curr.execute(sql, (wd_id, user_id, asset, amount, f"0x{fake.md5()}", "requested"))
+        print(f"💸 [Accounting] Withdrawal Request: {amount} {asset}")
+
+# แก้ไขฟังก์ชัน main นิดหน่อยเพื่อความชัวร์
+def main():
+    print("🚀 Starting Producer Simulator...")
+    
+    # บรรทัดนี้จะวนรอจนกว่าจะได้ Connection มา
+    conn = get_connection() 
     
     try:
         while True:
-            # Randomly select an event type to generate
-            # Weights make some events more frequent than others (e.g., Tickers > Logins)
-            choice = random.choices(
-                [gen_order_created, gen_match_executed, gen_deposit, gen_login, gen_ticker, gen_audit],
-                weights=[30, 20, 10, 15, 40, 5], 
-                k=1
-            )[0]
+            # เพิ่มการเช็ค Connection หลุดกลางทาง
+            if conn.closed:
+                print("⚠️ Connection lost, reconnecting...")
+                conn = get_connection()
 
-            topic, message = choice()
+            with conn: # Auto Commit block
+                with conn.cursor() as curr:
+                    action = random.choices(
+                        ["user", "order", "tx", "sleep"], 
+                        weights=[10, 50, 20, 10], 
+                        k=1
+                    )[0]
+                    
+                    if action == "user":
+                        create_user(curr)
+                    elif action == "order":
+                        create_order(curr)
+                    elif action == "tx":
+                        create_transaction(curr)
             
-            # Send to Kafka
-            producer.send(topic, value=message)
+            time.sleep(random.uniform(0.5, 2.0))
             
-            # Print simplified log
-            event_type = topic.split('.')[-1].upper()
-            print(f"📤 Sent [{event_type}] to {topic} | ID: {message['event_id']}")
-            
-            # Sleep a bit to simulate realistic traffic (100ms - 500ms)
-            time.sleep(random.uniform(0.1, 0.5))
-
     except KeyboardInterrupt:
-        print("\n🛑 Simulation Stopped.")
-        producer.close()
+        print("\n🛑 Stopping Simulator.")
+    finally:
+        if conn: conn.close()
+
+if __name__ == "__main__":
+    main()
