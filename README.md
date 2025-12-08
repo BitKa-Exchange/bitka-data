@@ -143,3 +143,12 @@ docker-compose up -d --build
 ```bash
 docker-compose down --rmi all -v
 ```
+
+
+
+python3 -m streamlit run data-platform/dashboardv1.py
+
+
+docker-compose logs -f consumer
+
+docker-compose logs -f producer

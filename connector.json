@@ -1,58 +1,17 @@
 {
-  // -------------------------------------------------------------------------
-  // 1. Connector Identity
-  // -------------------------------------------------------------------------
-  "name": "bitka-connector", // Unique Identifier สำหรับ Connector นี้ใน Kafka Connect Cluster
-
+  "name": "bitka-connector",
   "config": {
-    // -----------------------------------------------------------------------
-    // 2. Connector Implementation
-    // -----------------------------------------------------------------------
-    "connector.class": "io.debezium.connector.postgresql.PostgresConnector", // ใช้ Debezium Class สำหรับ PostgreSQL CDC
-    
-    // สำคัญ: PostgreSQL Logical Replication ทำงานแบบ Sequential ผ่าน Slot เดียว
-    // การตั้งค่ามากกว่า 1 ไม่ช่วยเพิ่มความเร็ว และอาจทำให้เกิด Error ได้
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "tasks.max": "1",
-
-    // -----------------------------------------------------------------------
-    // 3. Source Database Connection
-    // -----------------------------------------------------------------------
-    "database.hostname": "postgres",  // Hostname ภายใน Docker Network
+    "database.hostname": "postgres",
     "database.port": "5432",
     "database.user": "postgres",
-    "database.password": "password",  // ใน Production ควรใช้การอ้างอิงผ่าน External Secrets หรือ Vault
-    "database.dbname": "bitka_main",  // ชื่อ Database เป้าหมาย
-
-    // -----------------------------------------------------------------------
-    // 4. Topic Naming Strategy
-    // -----------------------------------------------------------------------
-    // Prefix นี้จะนำหน้าชื่อ Topic ทั้งหมด เช่น: "bitka.public.orders"
-    // ช่วยแยก Namespace ของแต่ละ Environment หรือแต่ละ Database ให้ชัดเจน
+    "database.password": "password",
+    "database.dbname": "bitka_main",
     "topic.prefix": "bitka",
-
-    // -----------------------------------------------------------------------
-    // 5. Filtering Scope (Whitelisting)
-    // -----------------------------------------------------------------------
-    // Best Practice: จำกัดการดึงข้อมูลเฉพาะ Schema ที่ใช้งาน เพื่อลด Load ของ Database
     "schema.include.list": "public",
-    
-    // Best Practice: ระบุชื่อตารางที่ต้องการแบบเจาะจง (Explicit Whitelist)
-    // ป้องกันการดึงตารางขยะ, ตารางชั่วคราว, หรือข้อมูล Sensitive ที่ไม่ได้ตั้งใจ
     "table.include.list": "public.orders,public.matches,public.deposits,public.withdrawals,public.users,public.login_history,public.tickers,public.audit_logs",
-
-    // -----------------------------------------------------------------------
-    // 6. Replication Mechanism
-    // -----------------------------------------------------------------------
-    // ใช้ Native PostgreSQL Logical Decoding (มาตรฐานสำหรับ PG 10+)
-    // ไม่ต้องลง Plugin ภายนอกเพิ่มเติมใน Database Server
     "plugin.name": "pgoutput",
-
-    // -----------------------------------------------------------------------
-    // 7. Data Type Handling (Critical for Finance)
-    // -----------------------------------------------------------------------
-    // CRITICAL: บังคับให้แปลงข้อมูลตัวเลขทศนิยม (Decimal/Numeric) เป็น String
-    // เหตุผล: เพื่อป้องกันปัญหา Precision Loss (ทศนิยมเพี้ยน) ที่มักเกิดจาก Floating-point
-    // ซึ่งสำคัญมากสำหรับระบบการเงิน/Trading
     "decimal.handling.mode": "string"
   }
 }
