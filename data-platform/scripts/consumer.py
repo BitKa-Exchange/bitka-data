@@ -7,13 +7,23 @@ from psycopg2.extras import execute_values
 from datetime import datetime
 
 # --- Config ---
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "redpanda:9092")
-DW_HOST = os.getenv("DW_HOST", "warehouse")
-DW_PORT = os.getenv("DW_PORT", "5432")
-DW_USER = os.getenv("DW_USER", "warehouse_admin")
-DW_PASS = os.getenv("DW_PASS", "warehouse_password")
-DW_NAME = os.getenv("DW_NAME", "bitka_dw")
+KAFKA_BROKER = os.environ.get("KAFKA_BROKER")
+DW_HOST = os.environ.get("DW_HOST")
+DW_PORT = os.environ.get("DW_PORT", "5432")
+DW_USER = os.environ.get("DW_USER")
+DW_PASS = os.environ.get("DW_PASS")
+DW_NAME = os.environ.get("DW_NAME", "bitka_dw")
 
+required_vars = [
+    ("KAFKA_BROKER", KAFKA_BROKER), 
+    ("DW_HOST", DW_HOST), 
+    ("DW_USER", DW_USER), 
+    ("DW_PASS", DW_PASS)
+]
+for var_name, value in required_vars:
+    if not value:
+        raise ValueError(f"❌ Missing required environment variable: {var_name}")
+    
 BATCH_SIZE = 100
 FLUSH_INTERVAL = 5 
 
@@ -25,7 +35,7 @@ TOPIC_MAPPING = {
     "bitka.public.withdrawals": "withdrawals",
     "bitka.public.tickers": "tickers",
     "bitka.public.login_history": "login_history",
-    "bitka.public.audit_logs": "audit_logs"  # ✅ เพิ่มบรรทัดนี้ครับ
+    "app.events.audit_logs": "audit_logs"
 }
 
 def get_db_connection():
@@ -37,33 +47,51 @@ def get_db_connection():
         print(f"❌ DB Connect Error: {e}")
         return None
 
-# --- ฟังก์ชันช่วยแปลง Type ข้อมูล ---
-def fix_data_types(row):
+def clean_data(row, table_name):
     """
-    1. แปลง Unix Timestamp (int) -> Python Datetime
-    2. แปลง Dictionary -> JSON String (สำหรับ audit_logs)
+    ทำความสะอาดข้อมูล แปลง Type และจัดการ Format ให้เป็นมาตรฐาน
     """
     new_row = row.copy()
     
-    # 1. จัดการเรื่องเวลา (Timestamp)
-    time_cols = ['created_at', 'updated_at']
+    # List คอลัมน์ที่ต้องจัดการพิเศษ
+    time_cols = ['created_at', 'updated_at', 'completed_at', 'login_time']
+    json_cols = ['details_before', 'details_after', 'metadata']
+    numeric_cols = ['amount', 'price', 'fee', 'balance', 'last_price', 'volume_24h']
+
+    for key, val in new_row.items():
+        # 1. String Cleaning: ตัดช่องว่างหน้าหลัง
+        if isinstance(val, str):
+            val = val.strip()
+            # ถ้าเป็น string ว่างเปล่า ให้เป็น None (NULL)
+            if val == "":
+                val = None
+            new_row[key] = val
+
+        # 2. Numeric Cleaning: จัดการตัวเลขที่อาจมาเป็น String ว่าง
+        if key in numeric_cols and val == "":
+            new_row[key] = None
+
+    # 3. Table Specific Cleaning (User Email)
+    if table_name == 'users' and 'email' in new_row and new_row['email']:
+        # แปลง Email เป็นตัวเล็กทั้งหมด
+        new_row['email'] = new_row['email'].lower()
+
+    # 4. Timestamp Handling (int -> datetime)
     for col in time_cols:
         if col in new_row and new_row[col] is not None:
             val = new_row[col]
             if isinstance(val, (int, float)):
                 try:
-                    # ถ้าเลขเยอะเกิน 11 หลัก ให้หาร 1,000,000 เพื่อเป็นวินาที (Microseconds -> Seconds)
+                    # Microseconds check
                     if val > 9999999999: 
                         val = val / 1_000_000
                     new_row[col] = datetime.fromtimestamp(val)
                 except Exception:
                     pass 
 
-    # 2. จัดการเรื่อง JSON (สำหรับ audit_logs) ✅ เพิ่มส่วนนี้ครับ
-    json_cols = ['details_before', 'details_after']
+    # 5. JSON Handling (dict -> json string)
     for col in json_cols:
         if col in new_row and isinstance(new_row[col], dict):
-            # Postgres ต้องการ String สำหรับ JSONB ไม่ใช่ Python Dict
             new_row[col] = json.dumps(new_row[col])
 
     return new_row
@@ -71,8 +99,8 @@ def fix_data_types(row):
 def process_batch(conn, table_name, buffer):
     if not buffer: return
     
-    # 1. แปลงข้อมูล Type ให้ถูกต้องก่อน
-    cleaned_buffer = [fix_data_types(row) for row in buffer]
+    # ✅ 1. เรียกใช้ clean_data โดยส่ง table_name ไปด้วย
+    cleaned_buffer = [clean_data(row, table_name) for row in buffer]
     
     # 2. ระบุ Primary Key ของแต่ละตาราง
     pkey = "id" # Default
@@ -104,7 +132,6 @@ def process_batch(conn, table_name, buffer):
         
         # สร้าง SQL Query
         if table_name == "tickers":
-            # Tickers ต้อง Update เสมอ
             sql = f"""
                 INSERT INTO {table_name} ({columns}) VALUES %s
                 ON CONFLICT (symbol) DO UPDATE SET
@@ -113,13 +140,12 @@ def process_batch(conn, table_name, buffer):
                 updated_at = EXCLUDED.updated_at
             """
         else:
-            # Table อื่นๆ Upsert ปกติ
             set_clause = ", ".join([f"{k}=EXCLUDED.{k}" for k in keys])
             sql = f"INSERT INTO {table_name} ({columns}) VALUES %s ON CONFLICT ({pkey}) DO UPDATE SET {set_clause}"
 
         execute_values(cursor, sql, values)
         conn.commit()
-        print(f"✅ Inserted {len(final_batch)} rows into {table_name} (Deduplicated from {len(buffer)})")
+        print(f"✅ Inserted {len(final_batch)} rows into {table_name} (Cleaned & Deduped)")
         
     except Exception as e:
         print(f"⚠️ Batch Insert Error ({table_name}): {e}")
@@ -137,7 +163,6 @@ def main():
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
         auto_offset_reset='earliest',
-        # ✅ เปลี่ยน Group ID เป็น v2 เพื่อให้เริ่มอ่าน Audit Logs ตั้งแต่ต้น
         group_id='bitka_warehouse_group_v2' 
     )
 
@@ -151,21 +176,40 @@ def main():
         if topic not in TOPIC_MAPPING: continue
         
         table_name = TOPIC_MAPPING[topic]
-        payload = message.value.get('payload')
+        val = message.value
         
-        if payload and payload.get('after'):
-            data = payload['after']
+        data = None
+        
+        # Logic แกะข้อมูล (เหมือนเดิม)
+        if isinstance(val, dict) and 'payload' in val:
+            payload = val.get('payload')
+            if payload and 'after' in payload:
+                data = payload['after']
+        elif isinstance(val, dict) and 'payload' not in val:
+            data = val
+            
+        if data:
             buffers[table_name].append(data)
             
+            # ---------------------------------------------------------
+            # ✅ ส่วนที่ต้องเพิ่ม: เช็คว่าต้องบันทึกหรือยัง (Flush Logic)
+            # ---------------------------------------------------------
+            
+            # 1. เช็คจำนวน: ถ้า Buffer ของตารางนี้เต็ม (ครบ 100 แถว) ให้บันทึกทันที
+            if len(buffers[table_name]) >= BATCH_SIZE:
+                print(f"📦 Batch full for {table_name}, flushing...")
+                process_batch(conn, table_name, buffers[table_name])
+                buffers[table_name] = [] # เคลียร์ Buffer
+
+        # 2. เช็คเวลา: ถ้าผ่านไปนานเกิน 5 วินาที ให้บันทึกทุกตาราง (ป้องกันข้อมูลค้าง)
         current_time = time.time()
-        is_time_up = (current_time - last_flush_time) >= FLUSH_INTERVAL
-        
-        for tbl, buf in buffers.items():
-            if len(buf) >= BATCH_SIZE or (is_time_up and len(buf) > 0):
-                process_batch(conn, tbl, buf)
-                buffers[tbl] = [] 
-        
-        if is_time_up:
+        if current_time - last_flush_time > FLUSH_INTERVAL:
+            # วนลูปรอบทุกตารางที่มีข้อมูลค้างอยู่
+            for tbl, buf in buffers.items():
+                if buf:
+                    print(f"⏰ Time limit reached, flushing {tbl}...")
+                    process_batch(conn, tbl, buf)
+                    buffers[tbl] = [] # เคลียร์ Buffer
             last_flush_time = current_time
 
 if __name__ == "__main__":

@@ -23,7 +23,6 @@ services:
       - bitka-net
     volumes:
       - pg_source_data:/var/lib/postgresql/data
-      # เพิ่มบรรทัดนี้ครับ 👇 มันจะ map ไฟล์จากเครื่องเรา เข้าไปในโฟลเดอร์ init ของ container
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
   # -------------------------------------------------------
   # 2. Data Warehouse (PostgreSQL) - พอร์ต 5433
@@ -47,7 +46,6 @@ services:
   # 3. Streaming Layer (Redpanda/Kafka) - พอร์ต 19092, 9092
   # -------------------------------------------------------
   redpanda:
-    # แก้ไข: เปลี่ยนมาใช้ Image หลักของ Redpanda Data
     image: redpandadata/redpanda:v23.2.14
     container_name: bitka_redpanda
     command:
@@ -66,17 +64,20 @@ services:
       - "8083:8083"
       - "8084:8084"
       - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
     networks:
       - bitka-net
 
+  # -------------------------------------------------------
   # UI สำหรับดูข้อมูลใน Kafka (เข้าผ่าน http://localhost:8080)
+  # -------------------------------------------------------
   redpanda-console:
-    # แก้ไข: เปลี่ยนมาใช้ Image หลัก
     image: redpandadata/console:v2.3.1
     container_name: bitka_console
     restart: on-failure
-    entrypoint: /bin/sh
-    command: -c "echo \"kafka.brokers=redpanda:9092\" > /tmp/config.yml; /app/console"
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
     ports:
       - "8080:8080"
     depends_on:
@@ -91,7 +92,6 @@ services:
     image: quay.io/debezium/connect:2.4
     container_name: bitka_debezium
     ports:
-      # แก้ไข: เปลี่ยน Port แมพออกมาเป็น 8085 เพื่อไม่ให้ชนกับ Redpanda Proxy (8083)
       - "8085:8083" 
     environment:
       BOOTSTRAP_SERVERS: redpanda:9092
@@ -106,13 +106,12 @@ services:
       - bitka-net
   
 
-  # ... (services อื่นๆ ด้านบน: postgres, warehouse, redpanda, connect)
 
   # -------------------------------------------------------
-  # 5. Auto Config Connector (ตัวช่วยยิงคำสั่งอัตโนมัติ)
+  # 5. Auto Config Connector (Clean Version)
   # -------------------------------------------------------
   connector-setup:
-    image: curlimages/curl:latest
+    image: alpine:latest
     container_name: bitka_connector_setup
     networks:
       - bitka-net
@@ -120,22 +119,29 @@ services:
       - connect
     volumes:
       - ./connector.json:/config/connector.json
+    environment:
+      DB_HOST: postgres
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
     command: >
       /bin/sh -c "
+        apk add --no-cache curl gettext;
+
         echo 'Waiting for Debezium to be ready...';
-        # วนลูปรอจนกว่า Debezium API (port 8083) จะตอบกลับมาว่าพร้อม (HTTP 200)
         while [ $$(curl -s -o /dev/null -w %{http_code} http://connect:8083/) -ne 200 ]; do
           echo '... waiting for Debezium API ...';
           sleep 5;
         done;
-        echo 'Debezium is ready! Registering connector...';
-        # ยิงคำสั่ง Register
-        curl -X POST -H 'Content-Type: application/json' http://connect:8083/connectors/ -d @/config/connector.json;
+
+        echo 'Debezium is ready! Preparing configuration...';
+        
+        envsubst < /config/connector.json > /tmp/connector_config.json;
+        
+        echo 'Registering connector...';
+        curl -X POST -H 'Content-Type: application/json' http://connect:8083/connectors/ -d @/tmp/connector_config.json;
+        
         echo 'Done!';
       "
-
-
-  # ... (services อื่นๆ)
 
   # -------------------------------------------------------
   # 6. Producer Simulator (ตัวปั๊มข้อมูล)
@@ -146,30 +152,28 @@ services:
     depends_on:
       - postgres
       - connect
+      - redpanda
     environment:
-      # ชี้ไปหา Database Container โดยตรง (ใช้ชื่อ service 'postgres')
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: ${DB_USER}
       DB_PASS: ${DB_PASS}
+      KAFKA_BROKER: redpanda:9092
+    command: ["python", "-u", "producer_simulator.py"] 
     networks:
       - bitka-net
 
-  # ... (ต่อจาก producer)
 
   # -------------------------------------------------------
   # 7. Consumer Worker (Batch Processing)
   # -------------------------------------------------------
   consumer:
-    build: .  # ใช้ Dockerfile ตัวเดิมที่ root
+    build: . 
     container_name: bitka_consumer
-    restart: always # ถ้ารันแล้วพัง ให้มันลองใหม่ (เผื่อ Kafka ยังไม่พร้อม)
+    restart: always 
     depends_on:
       - warehouse
       - redpanda
-    volumes:
-      # Map โฟลเดอร์เข้าไป เพื่อให้เจอไฟล์ script
-      - ./data-platform/scripts:/app/data-platform/scripts
     environment:
       KAFKA_BROKER: redpanda:9092
       DW_HOST: warehouse
@@ -177,13 +181,10 @@ services:
       DW_USER: warehouse_admin
       DW_PASS: warehouse_password
       DW_NAME: bitka_dw
-    # สั่งรันไฟล์ consumer.py ที่อยู่ในโฟลเดอร์ scripts
     command: ["python", "-u", "data-platform/scripts/consumer.py"]
     networks:
       - bitka-net
 
-
-  # ... (ต่อจาก consumer)
 
   # -------------------------------------------------------
   # 8. Dashboard (Streamlit) - พอร์ต 8501
@@ -201,7 +202,6 @@ services:
       DW_NAME: bitka_dw
     volumes:
       - ./data-platform:/app/data-platform
-    # คำสั่งรัน Streamlit
     command: ["streamlit", "run", "data-platform/dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
     ports:
       - "8501:8501" # เข้าผ่าน Browser ที่ http://localhost:8501
@@ -211,3 +211,4 @@ services:
 volumes:
   pg_source_data:
   pg_warehouse_data:
+  redpanda_data:

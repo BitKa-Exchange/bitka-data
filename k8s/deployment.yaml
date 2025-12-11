@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bitka-dashboard
+spec:
+  selector:
+    app: bitka-dashboard
+  ports:
+    - protocol: TCP
+      port: 8501
+      targetPort: 8501
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bitka-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bitka-dashboard
+  template:
+    metadata:
+      labels:
+        app: bitka-dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: bitka-platform:latest 
+        command: ["streamlit", "run", "data-platform/dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+        env:
+        - name: DW_HOST
+          value: "postgres-warehouse"
+        - name: DW_PORT
+          value: "5432"
+        - name: DW_NAME
+          value: "bitka_dw"
+        - name: DW_USER
+          value: "warehouse_admin"
+        - name: DW_PASS
+          valueFrom: # 💡 Best Practice: อ่านจาก Secret
+            secretKeyRef:
+              name: bitka-secrets
+              key: warehouse-password
+        # ถ้า Dashboard ต้องต่อ Kafka ด้วย (เพื่อดู Status) ก็ต้องเพิ่ม:
+        - name: KAFKA_BROKER
+          value: "bitka-redpanda:9092"

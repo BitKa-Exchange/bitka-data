@@ -1,154 +1,161 @@
-# 📖 Bitka Data Pipeline - Setup & Usage Guide
+# Bitka Data Platform
 
-เอกสารนี้อธิบายขั้นตอนการรันระบบ (Execution), การตรวจสอบข้อมูล (Monitoring), และการวิเคราะห์ข้อมูล (Analysis) สำหรับโปรเจกต์ **Bitka Data Pipeline** แบบ End-to-End
+**Bitka Data Platform** is a production-grade simulation of a cryptocurrency exchange data pipeline. It implements an **Event-Driven Architecture (EDA)** using **Change Data Capture (CDC)** to stream transactional data into a Data Warehouse in near real-time.
 
------
+## 🏗 System Architecture
 
-## 🛠 Part 1: Prerequisites & Installation
+The platform consists of four main layers, containerized and orchestrated via Docker Compose:
 
-สิ่งที่ต้องมีก่อนเริ่มใช้งาน
+1.  **Transactional Layer (Source System)**
+    * **Service:** `postgres` (PostgreSQL 14)
+    * **Role:** Simulates the exchange backend (Orders, Matches, Users, Wallets).
+    * **Data Generation:** A Python-based `producer` simulates user activity and trading events.
 
-1.  **Docker Desktop** (ต้องเปิดใช้งานอยู่)
-2.  **Python 3.10+** (สำหรับรัน Jupyter Notebook ในเครื่อง)
+2.  **Streaming & CDC Layer**
+    * **Service:** `redpanda` (Kafka-compatible) & `connect` (Debezium)
+    * **Role:** Captures row-level changes (INSERT/UPDATE/DELETE) from the Source DB WAL logs and streams them to Kafka topics.
+    * **Automation:** The `connector-setup` service automatically registers the Debezium connector configuration upon startup, injecting secrets via environment variables.
 
-### ติดตั้ง Python Dependencies (สำหรับ Local Analysis)
+3.  **Data Warehouse Layer (Destination)**
+    * **Service:** `warehouse` (PostgreSQL 14)
+    * **Role:** Stores analytical data optimized for querying.
+    * **ETL Worker:** A Python `consumer` subscribes to Kafka topics, performs data cleaning/deduplication, and loads data into the warehouse.
 
-แม้ระบบหลักจะรันบน Docker แต่เราควรลง Library ไว้ในเครื่องเพื่อรัน Notebook วิเคราะห์ข้อมูล
+4.  **Presentation Layer**
+    * **Service:** `dashboard` (Streamlit)
+    * **Role:** Provides real-time visualization of trading volumes, user growth, and audit logs.
 
-```bash
-pip install -r requirements.txt
-```
+---
 
------
+## 🚀 Quick Start
 
-## 🚀 Part 2: Start the System (One-Command Launch)
+### Prerequisites
+* Docker Engine (v20.10+)
+* Docker Compose (v2.0+)
 
-เราใช้ Docker Compose ในการรันทุก Service (Database, Kafka, Producer, Consumer, Dashboard) ด้วยคำสั่งเดียว
+### Installation
 
-### 1\. เริ่มต้นระบบทั้งหมด
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository-url>
+    cd bitka-data-platform
+    ```
 
-```bash
-docker-compose up -d --build
-```
+2.  **Configure Environment Variables:**
+    Create a `.env` file based on the example. **Ensure no secrets are hardcoded.**
+    ```bash
+    cp .env.example .env
+    # Edit .env to set secure passwords for DB_PASS, DW_PASS, etc.
+    ```
 
-**✅ Expected Result (ผลลัพธ์ที่ควรได้):**
+3.  **Start Services:**
+    ```bash
+    docker-compose up -d --build
+    ```
+    *The system will automatically initialize the databases, start the simulation, and configure the CDC connector.*
 
-  * Docker จะ Build Image ใหม่สำหรับ `producer`, `consumer`, และ `dashboard`
-  * Service ทั้งหมดสถานะ **Started**:
-      * `bitka_source_db` (Postgres Source)
-      * `bitka_warehouse` (Postgres DW)
-      * `bitka_redpanda` & `bitka_console` (Kafka)
-      * `bitka_debezium` (CDC)
-      * `bitka_producer` (Simulator ยิงข้อมูล)
-      * `bitka_consumer` (ตัวรับข้อมูลลง Warehouse)
-      * `bitka_dashboard` (Streamlit Web App)
-  * **Debezium** จะถูก Config อัตโนมัติโดย `connector-setup`
+4.  **Verify Deployment:**
+    * **Dashboard:** [http://localhost:8501](http://localhost:8501)
+    * **Redpanda Console (Kafka UI):** [http://localhost:8080](http://localhost:8080)
+    * **Data Warehouse (Direct SQL):** `localhost:5433`
 
------
+5.  **Shutdown:**
+    ```bash
+    docker-compose down
+    # Use -v to remove persisted volumes (resets all data)
+    docker-compose down -v
+    ```
 
-## 🔎 Part 3: Monitoring & Logs
+---
 
-เนื่องจากโปรแกรมรันอยู่เบื้องหลัง (Background) เราจะดูการทำงานผ่าน Logs
+## ⚙️ Configuration & DevOps Notes
 
-### 1\. ดู Producer Simulator (ตัวปั๊มข้อมูล)
+The application adheres to **12-Factor App** principles. All configurations are injected via Environment Variables.
 
-ดูว่า Simulator กำลังยิงข้อมูลอะไรออกมาบ้าง
+### 1. Environment Variables (`.env`)
 
-```bash
-docker-compose logs -f producer
-```
+| Category | Variable | Description | Default (Dev) |
+| :--- | :--- | :--- | :--- |
+| **Source DB** | `DB_HOST` | Hostname within network | `postgres` |
+| | `DB_PORT` | Internal Port | `5432` |
+| | `DB_USER` | Admin Username | `postgres` |
+| | `DB_PASS` | **[SECRET]** Admin Password | *-* |
+| **Warehouse** | `DW_HOST` | Hostname within network | `warehouse` |
+| | `DW_PORT_EXTERNAL` | Host Port Mapping | `5433` |
+| | `DW_USER` | Warehouse Username | `warehouse_admin` |
+| | `DW_PASS` | **[SECRET]** Warehouse Password | *-* |
+| **Streaming** | `KAFKA_BROKER` | Internal Broker Address | `redpanda:9092` |
 
-  * *ผลลัพธ์:* เห็น Log เช่น `📈 [Trading] Order Placed...` หรือ `🛡️ [System] Audit Log...`
+### 2. Connector Configuration (Templating)
+The Debezium configuration is defined in `connector.json`. It uses `gettext` (`envsubst`) to inject credentials at runtime.
+* **Template:** `connector.json` contains placeholders like `${DB_PASS}`.
+* **Execution:** The `connector-setup` container performs variable substitution and posts the config to the Connect REST API.
 
-### 2\. ดู Consumer Worker (ตัวบันทึกข้อมูล)
+### 3. Data Persistence
+* **Postgres Data:** Persisted in `pg_source_data` and `pg_warehouse_data` volumes.
+* **Redpanda/Kafka:** Persisted in `redpanda_data` volume. Events are **not lost** on container restarts.
 
-ดูว่า Consumer รับข้อมูลจาก Kafka และบันทึกลง Warehouse สำเร็จไหม
+---
 
-```bash
-docker-compose logs -f consumer
-```
+## 🔌 Service Endpoints & Port Mappings
 
-  * *ผลลัพธ์:* เห็น Log `✅ Inserted 50 rows into orders...`
+| Service Name | Internal Port | Host Port | Description |
+| :--- | :--- | :--- | :--- |
+| `postgres` | 5432 | **5432** | Transactional Database |
+| `warehouse` | 5432 | **5433** | Analytical Database |
+| `dashboard` | 8501 | **8501** | Streamlit Web App |
+| `redpanda-console`| 8080 | **8080** | Kafka Management UI |
+| `redpanda` | 9092, 19092 | **19092** | Kafka Broker (External Access) |
+| `connect` | 8083 | **8085** | Kafka Connect API |
 
-### 3\. ดู Kafka Topic (Redpanda Console)
+---
 
-เข้าหน้าเว็บเพื่อดูข้อมูลดิบใน Kafka Topic
+## 🛠 Troubleshooting
 
-  * 👉 **URL:** [http://localhost:8080](https://www.google.com/search?q=http://localhost:8080)
-  * ไปที่เมนู **Topics** จะเห็น Topic เช่น `bitka.public.orders`, `bitka.public.audit_logs`
+**Issue: `Kafka not ready` or Consumer fails on startup.**
+* **Cause:** Redpanda takes a few seconds to elect a leader on the first run.
+* **Resolution:** The Python services have built-in retry logic (`Retrying...`). Wait 30 seconds. If it persists, check logs: `docker logs bitka_redpanda`.
 
------
+**Issue: Connector Config Failed.**
+* **Resolution:** Check the setup logs:
+    ```bash
+    docker logs bitka_connector_setup
+    ```
+    Ensure your `.env` variables match those expected in `connector.json`.
 
-## 📊 Part 4: Visualization & Analysis
+---
 
-### 1\. Executive Dashboard (Streamlit)
+## 📂 Project Structure
 
-หน้าจอ Real-time สำหรับดูภาพรวมธุรกิจและตรวจสอบข้อมูลทุกตาราง
-
-  * 👉 **URL:** [http://localhost:8501](https://www.google.com/search?q=http://localhost:8501)
-  * **Features:**
-      * **Overview:** ดูยอด User, ราคาเหรียญ, กระแสเงินสด (Net Flow)
-      * **Data Explorer:** กดเลือกดูข้อมูลดิบของทุกตาราง (Users, Orders, Audit Logs, etc.)
-
-### 2\. Data Science Analysis (Jupyter Notebook)
-
-สำหรับการวิเคราะห์ข้อมูลเชิงลึกและการทำ Visualizations
-
-  * เปิดไฟล์ `Notebook.ipynb` ใน VS Code หรือ Jupyter Lab
-  * กด **Run All** เพื่อดึงข้อมูลจาก Warehouse มาสร้างกราฟและ Report อัตโนมัติ
-
------
-
-## 🗄 Part 5: Direct Database Access
-
-หากต้องการเขียน SQL Query เองใน Terminal
-
-### เข้าถึง Data Warehouse (Postgres)
-
-```bash
-docker exec -it bitka_warehouse psql -U warehouse_admin -d bitka_dw
-```
-
-**ตัวอย่าง SQL Commands:**
-
-```sql
--- ดูรายชื่อตารางทั้งหมด
-\dt
-
--- ดูรายการเทรดล่าสุด 5 รายการ
-SELECT * FROM matches ORDER BY created_at DESC LIMIT 5;
-
--- ดู Audit Logs ที่เกี่ยวกับการเงิน
-SELECT * FROM audit_logs WHERE action LIKE '%kyc%' LIMIT 5;
-```
-
------
-
-## 🧹 Part 6: Clean Up (Nuclear Option)
-
-หากต้องการลบข้อมูลทั้งหมดแล้วเริ่มใหม่ (Reset from zero)
-
-### แบบที่ 1: ล้างเฉพาะโปรเจกต์นี้ (แนะนำ)
-
-ลบ Container และข้อมูลใน Database ทิ้งทั้งหมด แล้วเริ่มใหม่
-
-```bash
-docker-compose down -v
-# จากนั้นเริ่มใหม่ด้วย
-docker-compose up -d --build
-```
-
-### แบบที่ 2: ล้าง Image เก่าทิ้งด้วย (ถ้าแก้โค้ดแล้ว Docker ไม่จำ)
-
-```bash
-docker-compose down --rmi all -v
-```
+```text
+.
+├── data-platform/          # Application Code
+│   ├── dashboard.py        # Streamlit Dashboard
+│   └── scripts/
+│       └── consumer.py     # ETL Worker (Kafka -> Warehouse)
+├── init.sql                # DB Schema Initialization
+├── connector.json          # Debezium Config Template
+├── docker-compose.yml      # Orchestration
+├── Dockerfile              # Python Services Image
+├── producer_simulator.py   # Data Generator
+├── requirements.txt        # Python Dependencies
+└── .env.example            # Environment Config Template
 
 
+💡 Key File Descriptions
 
-python3 -m streamlit run data-platform/dashboardv1.py
+Core Services:
 
+producer_simulator.py: The primary script used in the Docker container to generate real-time simulated traffic.
 
-docker-compose logs -f consumer
+data-platform/scripts/consumer.py: The worker process responsible for De-duplication and Data Cleaning before inserting into the Data Warehouse.
 
-docker-compose logs -f producer
+connector.json: Configures the CDC pipeline. It acts as a template where credentials are injected at runtime via envsubst.
+
+Analytics & Science:
+
+Files like detect_anomalies_trades.py and Notebook.ipynb are used for developing data models and analyzing patterns within the simulated exchange data.
+
+Infrastructure:
+
+init.sql: Contains the DDL for both the Source Database (Transactional) and the Data Warehouse (Analytical). The system uses REPLICA IDENTITY FULL to support full CDC capabilities.

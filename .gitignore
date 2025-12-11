@@ -1,17 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-venv/
-.pytest_cache/
-
-# Mac OS
-.DS_Store
-
-# Environment Variables (อย่าเอา Password ขึ้น Git!)
+# .dockerignore
+.git
 .env
-
-# Docker
-docker-compose.override.yml
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
