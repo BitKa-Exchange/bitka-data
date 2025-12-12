@@ -76,14 +76,39 @@ def create_user(curr):
         sql_login = "INSERT INTO login_history (user_id, ip_address, device_id, status) VALUES (%s, %s, %s, %s)"
         curr.execute(sql_login, (user_id, fake.ipv4(), fake.md5(), "success"))
 
+def get_current_market_price(curr, symbol):
+    # พยายามดึงราคาล่าสุดจาก Ticker ที่ Market Maker อัปเดตไว้
+    try:
+        curr.execute("SELECT last_price FROM tickers WHERE symbol = %s", (symbol,))
+        row = curr.fetchone()
+        if row and row[0]:
+            return float(row[0])
+    except Exception:
+        pass
+    
+    # ถ้าไม่มีข้อมูลใน DB ให้ใช้ราคา Default ที่สมจริง (ไม่ใช่ 100-3M)
+    defaults = {
+        "BTC_THB": 3300000.0,
+        "ETH_THB": 120000.0,
+        "DOGE_THB": 10.0,
+        "USDT_THB": 34.5
+    }
+    return defaults.get(symbol, 1000.0)
+
 def create_order(curr):
     if not USERS: return
     user_id = random.choice(USERS)
     symbol = random.choice(SYMBOLS)
     side = random.choice(["buy", "sell"])
-    price = round(random.uniform(100, 3000000), 2)
+    
+    # ✅ แก้ตรงนี้: อ้างอิงราคาตลาด + แกว่งตัวนิดหน่อย (±2%)
+    base_price = get_current_market_price(curr, symbol)
+    variation = random.uniform(0.98, 1.02) 
+    price = round(base_price * variation, 2)
+    
     qty = round(random.uniform(0.01, 10), 8)
     
+    # ... (ส่วน Insert ลง DB เหมือนเดิม) ...
     order_id = str(uuid.uuid4())
     sql = """
         INSERT INTO orders (order_id, user_id, symbol, side, type, price, quantity, status)

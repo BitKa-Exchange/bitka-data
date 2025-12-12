@@ -208,6 +208,47 @@ services:
     networks:
       - bitka-net
 
+# -------------------------------------------------------
+  # 9. Market Maker Bot (New!)
+  # -------------------------------------------------------
+  market-maker:
+    build: .
+    container_name: bitka_market_maker
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+    # 👇 สั่งให้รันไฟล์ market_maker.py แทน
+    command: ["python", "-u", "market_maker.py"] 
+    networks:
+      - bitka-net
+  
+
+  backfill_job:
+    build: . 
+    volumes:
+      - ./data-platform:/app/data-platform
+    command: python /app/data-platform/backfill.py
+    
+    depends_on:
+      - warehouse
+    
+    # ⚙️ ตั้งค่าให้ตรงกับ warehouse service ของคุณ
+    environment:
+      DW_HOST: warehouse
+      DW_PORT: 5432
+      DW_USER: warehouse_admin
+      DW_PASS: warehouse_password
+      DW_NAME: bitka_dw
+    
+    restart: "no" 
+    
+    # ✅ สำคัญมาก: ต้องใช้ Network เดียวกับ warehouse
+    networks:
+      - bitka-net
+
 volumes:
   pg_source_data:
   pg_warehouse_data:
