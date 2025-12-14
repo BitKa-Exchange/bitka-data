@@ -220,7 +220,9 @@ services:
       DB_HOST: postgres
       DB_USER: ${DB_USER}
       DB_PASS: ${DB_PASS}
-    # 👇 สั่งให้รันไฟล์ market_maker.py แทน
+      # 🔥 เพิ่ม 2 บรรทัดนี้ (เอา Key ที่ได้จากเว็บ Bitkub มาใส่แทน xxxx)
+      BITKUB_API_KEY: "วาง_API_KEY_ของคุณที่นี่"
+      BITKUB_API_SECRET: "วาง_API_SECRET_ของคุณที่นี่"
     command: ["python", "-u", "market_maker.py"] 
     networks:
       - bitka-net
@@ -246,6 +248,20 @@ services:
     restart: "no" 
     
     # ✅ สำคัญมาก: ต้องใช้ Network เดียวกับ warehouse
+    networks:
+      - bitka-net
+
+
+  matching-engine:
+    build: .
+    container_name: bitka_matching_engine
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+    command: ["python", "-u", "matching_engine.py"]
     networks:
       - bitka-net
 

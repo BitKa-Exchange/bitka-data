@@ -6,20 +6,19 @@ import random
 import time
 from datetime import datetime, timedelta
 
-# --- Config (อ่านจาก Env ของ Container Consumer/Dashboard) ---
+# --- Config ---
 DW_HOST = os.environ.get("DW_HOST", "warehouse")
 DW_PORT = os.environ.get("DW_PORT", "5432")
 DW_USER = os.environ.get("DW_USER", "warehouse_admin")
 DW_PASS = os.environ.get("DW_PASS", "warehouse_password")
 DW_NAME = os.environ.get("DW_NAME", "bitka_dw")
 
-# ตั้งค่าคู่เหรียญและการแปลงค่าเงิน
+# คู่เหรียญ
 PAIRS = {
     "BTCUSDT": "BTC_THB",
     "ETHUSDT": "ETH_THB",
     "DOGEUSDT": "DOGE_THB"
 }
-USDT_THB_RATE = 34.5  # เรทคงที่สำหรับการจำลอง
 
 def get_connection():
     try:
@@ -30,10 +29,27 @@ def get_connection():
         print(f"❌ Connection failed: {e}")
         return None
 
-def fetch_binance_klines(symbol, interval="1h", limit=168): 
-    """ดึงข้อมูลกราฟย้อนหลัง"""
-    # หมายเหตุ: ค่า default ใน function definition นี้ไม่ได้ถูกใช้จริง
-    # เราจะส่งค่าใหม่เข้าไปตอนเรียกใช้ฟังก์ชันนี้ใน backfill()
+# 🔥 ฟังก์ชันใหม่: หาเรทค่าเงินที่ทำให้กราฟต่อกันเนียนที่สุด
+def calculate_implied_rate():
+    print("🧮 Calibrating Exchange Rate...")
+    try:
+        # 1. ราคา Bitkub ปัจจุบัน
+        bk_res = requests.get("https://api.bitkub.com/api/market/ticker?sym=THB_BTC")
+        bk_price = float(bk_res.json()['THB_BTC']['last'])
+        
+        # 2. ราคา Binance ปัจจุบัน
+        bn_res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        bn_price = float(bn_res.json()['price'])
+        
+        # 3. คำนวณ Ratio
+        implied_rate = bk_price / bn_price
+        print(f"   ✅ Calibrated Rate: 1 USD = {implied_rate:.2f} THB (Based on BTC)")
+        return implied_rate
+    except Exception as e:
+        print(f"   ⚠️ Calibration failed ({e}), using default 34.0")
+        return 34.0
+
+def fetch_binance_klines(symbol, interval="5m", limit=1000): 
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         resp = requests.get(url)
@@ -42,39 +58,27 @@ def fetch_binance_klines(symbol, interval="1h", limit=168):
         print(f"❌ Failed to fetch {symbol}: {e}")
         return []
 
-def generate_matches_from_candle(candle, symbol):
-    """
-    แตกข้อมูล 1 แท่งเทียน ให้กลายเป็นรายการเทรดย่อยๆ (Matches)
-    """
-    # Binance format: [Open time, Open, High, Low, Close, Volume, ...]
+def generate_matches_from_candle(candle, symbol, rate):
+    # Binance: [Time, Open, High, Low, Close, Vol, ...]
     open_time = datetime.fromtimestamp(candle[0] / 1000)
     close_time = datetime.fromtimestamp(candle[6] / 1000)
     
-    price_open = float(candle[1]) * USDT_THB_RATE
-    price_high = float(candle[2]) * USDT_THB_RATE
-    price_low = float(candle[3]) * USDT_THB_RATE
-    price_close = float(candle[4]) * USDT_THB_RATE
+    # 🔥 คูณ Rate ที่คำนวณมาใหม่
+    price_open = float(candle[1]) * rate
+    price_high = float(candle[2]) * rate
+    price_low = float(candle[3]) * rate
+    price_close = float(candle[4]) * rate
     base_vol = float(candle[5])
     
     matches = []
     
-    # เทคนิค: สร้างรายการเทรดกระจายตัวใน 1 แท่งเทียน
-    # 1. เทรดราคา Open
+    # กระจาย Trade ในแท่งเทียน
     matches.append((open_time, price_open, base_vol * 0.1))
-    
-    # 2. เทรดราคา High
-    random_time_1 = open_time + (close_time - open_time) * 0.3
-    matches.append((random_time_1, price_high, base_vol * 0.2))
-    
-    # 3. เทรดราคา Low
-    random_time_2 = open_time + (close_time - open_time) * 0.6
-    matches.append((random_time_2, price_low, base_vol * 0.2))
-    
-    # 4. เทรดราคา Close
+    matches.append((open_time + (close_time - open_time) * 0.3, price_high, base_vol * 0.2))
+    matches.append((open_time + (close_time - open_time) * 0.6, price_low, base_vol * 0.2))
     matches.append((close_time, price_close, base_vol * 0.1))
     
-    # 5. เทรดสุ่มๆ อีก 3-4 ไม้ เพื่อให้ Volume ดูแน่นขึ้น
-    for _ in range(4):
+    for _ in range(3):
         rand_time = open_time + (close_time - open_time) * random.random()
         rand_price = random.uniform(price_low, price_high)
         matches.append((rand_time, rand_price, base_vol * 0.05))
@@ -83,65 +87,49 @@ def generate_matches_from_candle(candle, symbol):
 
 def backfill():
     print("⏳ Connecting to Data Warehouse...")
-    
-    # Retry logic
     conn = None
     for i in range(5):
         conn = get_connection()
-        if conn:
-            break
-        print(f"   ⚠️ Connection retry {i+1}/5 in 5 seconds...")
+        if conn: break
         time.sleep(5)
     
-    if not conn:
-        print("❌ Could not connect to Data Warehouse. Exiting.")
-        return
+    if not conn: return
+
+    # 🔥 คำนวณเรทก่อนเริ่มงาน
+    CURRENT_RATE = calculate_implied_rate()
 
     cur = conn.cursor()
-    total_inserted = 0
     
-    print("🚀 Starting Backfill Process (High Resolution: 5 Min)...")
+    # 🔥 ล้างข้อมูลเก่าก่อนเสมอ (เพื่อให้กราฟใหม่ทั้งชุด)
+    print("🧹 Cleaning old mismatched data...")
+    cur.execute("TRUNCATE TABLE matches, orders, tickers CASCADE;")
+    conn.commit()
+
+    total_inserted = 0
+    print(f"🚀 Starting Backfill (Using Rate: {CURRENT_RATE:.2f})...")
     
     for binance_sym, bitka_sym in PAIRS.items():
-        print(f"   🔎 Checking existing data for {bitka_sym}...")
-        
-        # เช็คว่ามีข้อมูลเดิมไหม (ถ้ามี ข้ามเลย เพื่อกันข้อมูลซ้ำ)
-        cur.execute("SELECT 1 FROM matches WHERE symbol = %s LIMIT 1", (bitka_sym,))
-        if cur.fetchone():
-            print(f"      ⚠️ Data for {bitka_sym} already exists. SKIPPING...")
-            continue
-
         print(f"      📊 Fetching {binance_sym} -> {bitka_sym}...")
-        
-        # 🔥 แก้ไขตรงนี้: เปลี่ยนเป็น 5m และ limit 1000 🔥
-        # 1000 แท่ง * 5 นาที = ข้อมูลย้อนหลังประมาณ 3.5 วัน (เพียงพอสำหรับ Demo และกราฟสวย)
-        klines = fetch_binance_klines(binance_sym, interval="5m", limit=1000)
+        klines = fetch_binance_klines(binance_sym, interval="5m", limit=1000) # ย้อนหลัง ~3.5 วัน
         
         matches_buffer = []
         for candle in klines:
-            trades = generate_matches_from_candle(candle, bitka_sym)
+            # ส่ง Rate เข้าไปคูณ
+            trades = generate_matches_from_candle(candle, bitka_sym, CURRENT_RATE)
             for t_time, t_price, t_qty in trades:
                 match_id = str(uuid.uuid4())
-                maker_id = str(uuid.uuid4())
-                taker_id = str(uuid.uuid4())
-                
-                matches_buffer.append((match_id, bitka_sym, t_price, t_qty, maker_id, taker_id, t_time))
+                matches_buffer.append((match_id, bitka_sym, t_price, t_qty, str(uuid.uuid4()), str(uuid.uuid4()), t_time))
         
-        # Batch Insert
         if matches_buffer:
             args_str = ','.join(cur.mogrify("(%s,%s,%s,%s,%s,%s,%s)", x).decode('utf-8') for x in matches_buffer)
             cur.execute("INSERT INTO matches (match_id, symbol, price, quantity, maker_user_id, taker_user_id, created_at) VALUES " + args_str)
             conn.commit()
-            print(f"      ✅ Inserted {len(matches_buffer)} trades (5m interval) for {bitka_sym}")
+            print(f"      ✅ Inserted {len(matches_buffer)} trades for {bitka_sym}")
             total_inserted += len(matches_buffer)
 
     cur.close()
     conn.close()
-    
-    if total_inserted == 0:
-        print("🎉 No new data needed backfill. Everything is up to date!")
-    else:
-        print(f"🎉 Backfill Complete! Total {total_inserted} records added.")
+    print("🎉 Backfill Complete! Graph should be smooth now.")
 
 if __name__ == "__main__":
     backfill()
