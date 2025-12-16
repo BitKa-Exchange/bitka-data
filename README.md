@@ -1,5 +1,3 @@
----
-
 #🪙 Bitka Data Platform (End-to-End Data Pipeline PoC)**Project Status:** *Proof of Concept (PoC) / Ready for Integration*
 
 โปรเจกต์นี้คือการจำลองและออกแบบ **Data Engineering Pipeline** สำหรับแพลตฟอร์มซื้อขายสินทรัพย์ดิจิทัล (Exchange) โดยเน้นไปที่การจัดการข้อมูลแบบ **Real-time Streaming**
