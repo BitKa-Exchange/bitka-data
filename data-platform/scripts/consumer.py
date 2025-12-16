@@ -14,6 +14,7 @@ DW_USER = os.environ.get("DW_USER")
 DW_PASS = os.environ.get("DW_PASS")
 DW_NAME = os.environ.get("DW_NAME", "bitka_dw")
 
+# ตรวจสอบ Environment Variables
 required_vars = [
     ("KAFKA_BROKER", KAFKA_BROKER), 
     ("DW_HOST", DW_HOST), 
@@ -22,8 +23,8 @@ required_vars = [
 ]
 for var_name, value in required_vars:
     if not value:
-        raise ValueError(f"❌ Missing required environment variable: {var_name}")
-    
+        print(f"⚠️ Warning: {var_name} is missing, utilizing defaults or risking failure.")
+
 BATCH_SIZE = 100
 FLUSH_INTERVAL = 5 
 
@@ -39,13 +40,17 @@ TOPIC_MAPPING = {
 }
 
 def get_db_connection():
-    try:
-        return psycopg2.connect(
-            host=DW_HOST, port=DW_PORT, user=DW_USER, password=DW_PASS, dbname=DW_NAME
-        )
-    except Exception as e:
-        print(f"❌ DB Connect Error: {e}")
-        return None
+    """เชื่อมต่อ Database พร้อมระบบ Retry"""
+    while True:
+        try:
+            conn = psycopg2.connect(
+                host=DW_HOST, port=DW_PORT, user=DW_USER, password=DW_PASS, dbname=DW_NAME
+            )
+            print("✅ Connected to Data Warehouse")
+            return conn
+        except Exception as e:
+            print(f"⏳ DW Connect Failed ({e}), retrying in 5s...")
+            time.sleep(5)
 
 def clean_data(row, table_name):
     """
@@ -82,7 +87,7 @@ def clean_data(row, table_name):
             val = new_row[col]
             if isinstance(val, (int, float)):
                 try:
-                    # Microseconds check
+                    # Microseconds check (Unix Timestamp vs Milliseconds)
                     if val > 9999999999: 
                         val = val / 1_000_000
                     new_row[col] = datetime.fromtimestamp(val)
@@ -99,10 +104,10 @@ def clean_data(row, table_name):
 def process_batch(conn, table_name, buffer):
     if not buffer: return
     
-    # ✅ 1. เรียกใช้ clean_data โดยส่ง table_name ไปด้วย
+    # Clean Data
     cleaned_buffer = [clean_data(row, table_name) for row in buffer]
     
-    # 2. ระบุ Primary Key ของแต่ละตาราง
+    # ระบุ Primary Key
     pkey = "id" # Default
     if table_name == "orders": pkey = "order_id"
     elif table_name == "users": pkey = "user_id"
@@ -113,7 +118,7 @@ def process_batch(conn, table_name, buffer):
     elif table_name == "audit_logs": pkey = "log_id"
     elif table_name == "login_history": pkey = "id"
 
-    # 3. Deduplicate: กรองเอาเฉพาะข้อมูลล่าสุดของ Key นั้นๆ ใน Batch นี้
+    # Deduplicate: เอาข้อมูลล่าสุดของ Key นั้นๆ ใน Batch นี้
     deduplicated_map = {}
     for row in cleaned_buffer:
         if pkey in row:
@@ -128,7 +133,7 @@ def process_batch(conn, table_name, buffer):
     try:
         keys = final_batch[0].keys()
         columns = ','.join(keys)
-        values = [[row[k] for k in keys] for row in final_batch]
+        values = [[row.get(k) for k in keys] for row in final_batch]
         
         # สร้าง SQL Query
         if table_name == "tickers":
@@ -145,7 +150,7 @@ def process_batch(conn, table_name, buffer):
 
         execute_values(cursor, sql, values)
         conn.commit()
-        print(f"✅ Inserted {len(final_batch)} rows into {table_name} (Cleaned & Deduped)")
+        print(f"✅ Inserted {len(final_batch)} rows into {table_name}")
         
     except Exception as e:
         print(f"⚠️ Batch Insert Error ({table_name}): {e}")
@@ -154,24 +159,34 @@ def process_batch(conn, table_name, buffer):
         cursor.close()
 
 def main():
-    print("⏳ Waiting for Kafka...")
+    print("⏳ Waiting for Kafka to be ready...")
     time.sleep(10) 
     
+    # เชื่อมต่อ Database ครั้งแรก
+    conn = get_db_connection()
+
     print("🚀 Starting Consumer...")
-    consumer = KafkaConsumer(
-        *TOPIC_MAPPING.keys(), 
-        bootstrap_servers=KAFKA_BROKER,
-        value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-        auto_offset_reset='earliest',
-        group_id='bitka_warehouse_group_v2' 
-    )
+    try:
+        consumer = KafkaConsumer(
+            *TOPIC_MAPPING.keys(), 
+            bootstrap_servers=KAFKA_BROKER,
+            # 🔥 แก้ไขจุดที่ 1: เพิ่ม if x else None ป้องกัน Error
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')) if x else None,
+            auto_offset_reset='earliest',
+            group_id='bitka_warehouse_group_v3' 
+        )
+    except Exception as e:
+        print(f"❌ Kafka Connection Error: {e}")
+        return
 
     buffers = {table: [] for table in TOPIC_MAPPING.values()}
     last_flush_time = time.time()
     
-    conn = get_db_connection()
-
     for message in consumer:
+        # 🔥 แก้ไขจุดที่ 2: ถ้าข้อมูลเป็น None (Decode ไม่ได้ หรือ Tombstone) ให้ข้าม
+        if message.value is None:
+            continue
+
         topic = message.topic
         if topic not in TOPIC_MAPPING: continue
         
@@ -180,36 +195,40 @@ def main():
         
         data = None
         
-        # Logic แกะข้อมูล (เหมือนเดิม)
+        # Logic แกะข้อมูล Debezium (Envelope)
         if isinstance(val, dict) and 'payload' in val:
             payload = val.get('payload')
+            # ถ้าเป็น Delete operation (op='d'), 'after' จะเป็น null
+            # ในที่นี้เราจะข้าม Delete ไปก่อน หรือถ้าจะทำต้องเช็ค op
             if payload and 'after' in payload:
                 data = payload['after']
         elif isinstance(val, dict) and 'payload' not in val:
+            # กรณีไม่ได้ใช้ Debezium Envelope
             data = val
             
         if data:
             buffers[table_name].append(data)
             
-            # ---------------------------------------------------------
-            # ✅ ส่วนที่ต้องเพิ่ม: เช็คว่าต้องบันทึกหรือยัง (Flush Logic)
-            # ---------------------------------------------------------
-            
-            # 1. เช็คจำนวน: ถ้า Buffer ของตารางนี้เต็ม (ครบ 100 แถว) ให้บันทึกทันที
+            # Flush Check: ถ้า Buffer เต็ม
             if len(buffers[table_name]) >= BATCH_SIZE:
                 print(f"📦 Batch full for {table_name}, flushing...")
+                
+                # Reconnect DB if closed
+                if conn.closed: conn = get_db_connection()
+                
                 process_batch(conn, table_name, buffers[table_name])
-                buffers[table_name] = [] # เคลียร์ Buffer
+                buffers[table_name] = [] 
 
-        # 2. เช็คเวลา: ถ้าผ่านไปนานเกิน 5 วินาที ให้บันทึกทุกตาราง (ป้องกันข้อมูลค้าง)
+        # Time-based Flush
         current_time = time.time()
         if current_time - last_flush_time > FLUSH_INTERVAL:
-            # วนลูปรอบทุกตารางที่มีข้อมูลค้างอยู่
+            if conn.closed: conn = get_db_connection()
+            
             for tbl, buf in buffers.items():
                 if buf:
                     print(f"⏰ Time limit reached, flushing {tbl}...")
                     process_batch(conn, tbl, buf)
-                    buffers[tbl] = [] # เคลียร์ Buffer
+                    buffers[tbl] = [] 
             last_flush_time = current_time
 
 if __name__ == "__main__":
